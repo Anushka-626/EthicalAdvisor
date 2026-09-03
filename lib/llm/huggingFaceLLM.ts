@@ -23,7 +23,7 @@ const HF_TOKEN = process.env.HF_TOKEN
 
 const HF_MODEL =
   process.env.HF_MODEL ||
-  "meta-llama/Llama-3.1-8B-Instruct"
+  "openai/gpt-oss-20b"
 
 const HF_URL =
   "https://router.huggingface.co/v1/chat/completions"
@@ -93,21 +93,28 @@ async function callHuggingFace(
       errorText
     )
 
-    let providerMessage = errorText.trim()
+    let providerMessage =
+      errorText.trim()
 
     try {
-      const errorData = JSON.parse(errorText)
+
+      const errorData =
+        JSON.parse(errorText)
+
       providerMessage =
         errorData?.error?.message ||
         errorData?.error ||
         providerMessage
+
     } catch {
-      // Keep the plain-text provider response when it is not JSON.
+      // Keep the plain-text provider response.
     }
 
     throw new Error(
       `Hugging Face API error: ${response.status}${
-        providerMessage ? ` - ${providerMessage}` : ""
+        providerMessage
+          ? ` - ${providerMessage}`
+          : ""
       }`
     )
   }
@@ -226,6 +233,12 @@ function extractJsonObject(
  * STEP 1
  *
  * Extract contextual slots from the project brief.
+ *
+ * IMPORTANT:
+ * This function is ONLY used for
+ * Condition B (clarify-first).
+ *
+ * Condition A does NOT call this function.
  */
 export async function extractSlots(
   input: ExtractSlotsInput
@@ -238,7 +251,7 @@ export async function extractSlots(
 
 
   console.log(
-    "[HuggingFace] Extracting contextual slots..."
+    `[HuggingFace] Extracting contextual slots using model: ${HF_MODEL}`
   )
 
 
@@ -328,32 +341,43 @@ export async function extractSlots(
  *
  * Generate the final ethical risk register.
  *
- * This receives:
+ * Condition A:
+ *   slots = undefined or []
+ *   clarificationAnswers = {}
  *
- * - original project brief
- * - extracted slots
- * - clarification answers
- * - experiment mode
+ * Condition B:
+ *   slots = extracted contextual slots
+ *   clarificationAnswers = participant answers
+ *
+ * The SAME LLM model is used for both conditions.
  */
 export async function generateRiskRegister(
   input: GenerateRiskRegisterInput
 ): Promise<GenerateRiskRegisterOutput> {
 
-  const slotValues =
-    Object.fromEntries(
-
-      input.slots.map(
-        (slot) => [
-          slot.id,
-          slot.value ??
-            "not specified",
-        ]
-      )
-
-    ) as Record<
-      SlotId,
-      string
-    >
+  /**
+   * IMPORTANT:
+   *
+   * slots are optional because Condition A
+   * must NOT perform a separate slot-extraction call.
+   *
+   * If slots are not supplied, an empty object
+   * is passed to the final prompt.
+   */
+  const slotValues:
+    Partial<Record<SlotId, string>> =
+      input.slots &&
+      input.slots.length > 0
+        ? Object.fromEntries(
+            input.slots.map(
+              (slot) => [
+                slot.id,
+                slot.value ??
+                  "not specified",
+              ]
+            )
+          )
+        : {}
 
 
   const prompt =
@@ -366,7 +390,11 @@ export async function generateRiskRegister(
 
 
   console.log(
-    "[HuggingFace] Generating risk register..."
+    `[HuggingFace] Generating risk register using model: ${HF_MODEL}`
+  )
+
+  console.log(
+    `[HuggingFace] Mode: ${input.mode}`
   )
 
 
@@ -403,6 +431,14 @@ export async function generateRiskRegister(
   }
 
 
+  /**
+   * Build the final structured register.
+   *
+   * For Condition A, input.slots may be undefined,
+   * therefore slots becomes [].
+   *
+   * For Condition B, the extracted slots are preserved.
+   */
   const register:
     RiskRegister = {
 
@@ -418,11 +454,18 @@ export async function generateRiskRegister(
           ? parsed.generatedAt
           : new Date().toISOString(),
 
+      /**
+       * Never allow the LLM to determine
+       * the experimental condition.
+       *
+       * The application supplies it.
+       */
       mode:
         input.mode,
 
       slots:
-        input.slots,
+        input.slots ??
+        [],
 
       risks:
         Array.isArray(
