@@ -1,7 +1,5 @@
-import {
-  SLOT_DEFINITIONS,
-  SlotId,
-} from "./slots"
+import { SLOT_DEFINITIONS } from "./slots"
+import type { SlotId } from "./slots"
 
 /**
  * Build the prompt used to extract contextual information
@@ -15,9 +13,7 @@ import {
 export function buildSlotExtractionPrompt(
   brief: string
 ): string {
-  const slotList = Object.entries(
-    SLOT_DEFINITIONS
-  )
+  const slotList = Object.entries(SLOT_DEFINITIONS)
     .map(
       ([id, def]) =>
         `- "${id}": ${def.description}`
@@ -112,27 +108,58 @@ ${Object.entries(clarificationAnswers)
   )
   .join("\n\n")}
 `
-      : ""
+      : "No participant clarification answers were provided."
+
 
   return `
 You are an expert in responsible AI and data science ethics.
 
 Analyse the following MindAlert project and produce a structured ethical risk register.
 
-IMPORTANT:
+IMPORTANT EXPERIMENTAL REQUIREMENTS:
+
 - The project brief is fixed.
+- Analyse the exact project provided.
 - Do not replace the project with another project.
 - Do not invent project details.
 - Base the analysis primarily on the provided project brief.
-- When additional contextual information is provided, incorporate it into the analysis.
+- When additional contextual information is provided, incorporate it.
+- Participant clarification answers provide additional context.
 - When information is missing, explicitly acknowledge the uncertainty.
-- Produce context-specific ethical risks.
-- Do not assume information that is not provided.
+- Do not assume that an unspecified practice exists or does not exist.
+
+==================================================
+REQUIRED NUMBER OF RISKS
+==================================================
+
+You MUST identify EXACTLY 5 DISTINCT ETHICAL RISKS.
+
+There must be exactly ONE risk for each of these five categories:
+
+1. fairness
+2. privacy
+3. transparency
+4. security
+5. accountability
+
+The five risks must be distinct.
+
+Do NOT combine multiple categories into one risk.
+
+Do NOT return fewer than 5 risks.
+
+Do NOT return more than 5 risks.
+
+==================================================
+REQUIRED JSON FORMAT
+==================================================
 
 You MUST return ONLY a valid JSON object.
+
 Do NOT include markdown.
-Do NOT include explanations.
+Do NOT include explanations outside the JSON.
 Do NOT include a preamble.
+Do NOT use code fences.
 
 The JSON must have exactly this structure:
 
@@ -140,8 +167,64 @@ The JSON must have exactly this structure:
   "projectTitle": "short descriptive title",
   "risks": [
     {
-      "category": "fairness | privacy | transparency | security | accountability",
-      "description": "clear one-sentence description of the specific ethical risk",
+      "category": "fairness",
+      "description": "clear one-sentence description of the specific fairness risk",
+      "affectedStakeholders": [
+        "stakeholder 1",
+        "stakeholder 2"
+      ],
+      "severity": "low | medium | high | critical",
+      "likelihood": "unlikely | possible | likely | almost_certain",
+      "mitigations": [
+        "concrete actionable mitigation 1",
+        "concrete actionable mitigation 2"
+      ]
+    },
+    {
+      "category": "privacy",
+      "description": "clear one-sentence description of the specific privacy risk",
+      "affectedStakeholders": [
+        "stakeholder 1",
+        "stakeholder 2"
+      ],
+      "severity": "low | medium | high | critical",
+      "likelihood": "unlikely | possible | likely | almost_certain",
+      "mitigations": [
+        "concrete actionable mitigation 1",
+        "concrete actionable mitigation 2"
+      ]
+    },
+    {
+      "category": "transparency",
+      "description": "clear one-sentence description of the specific transparency risk",
+      "affectedStakeholders": [
+        "stakeholder 1",
+        "stakeholder 2"
+      ],
+      "severity": "low | medium | high | critical",
+      "likelihood": "unlikely | possible | likely | almost_certain",
+      "mitigations": [
+        "concrete actionable mitigation 1",
+        "concrete actionable mitigation 2"
+      ]
+    },
+    {
+      "category": "security",
+      "description": "clear one-sentence description of the specific security risk",
+      "affectedStakeholders": [
+        "stakeholder 1",
+        "stakeholder 2"
+      ],
+      "severity": "low | medium | high | critical",
+      "likelihood": "unlikely | possible | likely | almost_certain",
+      "mitigations": [
+        "concrete actionable mitigation 1",
+        "concrete actionable mitigation 2"
+      ]
+    },
+    {
+      "category": "accountability",
+      "description": "clear one-sentence description of the specific accountability risk",
       "affectedStakeholders": [
         "stakeholder 1",
         "stakeholder 2"
@@ -161,54 +244,129 @@ The JSON must have exactly this structure:
   ]
 }
 
-Rules:
+==================================================
+RISK RULES
+==================================================
 
-1. Identify 3-6 distinct ethical risks.
+1. Risk 1 MUST have category "fairness".
 
-2. Use the following categories where relevant:
-   - fairness
-   - privacy
-   - transparency
-   - security
-   - accountability
+2. Risk 2 MUST have category "privacy".
 
-3. Risks must be specific to the MindAlert project.
+3. Risk 3 MUST have category "transparency".
 
-4. Affected stakeholders must be based on the project context.
+4. Risk 4 MUST have category "security".
 
-5. Severity must be one of:
-   - low
-   - medium
-   - high
-   - critical
+5. Risk 5 MUST have category "accountability".
 
-6. Likelihood must be one of:
-   - unlikely
-   - possible
-   - likely
-   - almost_certain
+6. There MUST be exactly 5 risks.
 
-7. Mitigations must be concrete and actionable.
+7. Every risk must be distinct.
 
-8. Do not invent facts that are not supported by the brief.
+8. Every risk must be specifically connected to MindAlert.
 
-9. If contextual information is "not specified", acknowledge that uncertainty where relevant.
+9. Do not generate generic ethical statements that are unrelated to MindAlert.
 
-10. Participant clarification answers, when present, provide additional context and should be incorporated into the final risk analysis.
+10. Affected stakeholders must be based on the project context.
 
-11. Do not treat missing contextual information as evidence that a particular practice does or does not occur.
+11. Do not invent stakeholders.
 
-Fixed MindAlert project brief:
+12. Do not invent system characteristics.
+
+13. Severity MUST be exactly one of:
+
+    "low"
+    "medium"
+    "high"
+    "critical"
+
+14. Likelihood MUST be exactly one of:
+
+    "unlikely"
+    "possible"
+    "likely"
+    "almost_certain"
+
+15. Every risk MUST contain at least two concrete mitigations.
+
+16. Mitigations must be actionable.
+
+17. If important information is missing, acknowledge the uncertainty.
+
+18. Do not treat "not specified" as evidence that something is absent.
+
+19. Participant clarification answers, when present, should be incorporated into the relevant risks.
+
+20. Do not use participant answers to invent facts that were not stated.
+
+21. Return valid JSON only.
+
+==================================================
+RISK QUALITY REQUIREMENTS
+==================================================
+
+FAIRNESS:
+
+Identify a MindAlert-specific concern about whether the system could perform differently across groups, populations, or types of students.
+
+PRIVACY:
+
+Identify a MindAlert-specific concern involving sensitive personal data, data collection, data use, storage, access, or disclosure.
+
+TRANSPARENCY:
+
+Identify a MindAlert-specific concern involving explainability, communication of predictions, uncertainty, or how affected people understand the system's output.
+
+SECURITY:
+
+Identify a MindAlert-specific concern involving protection of the data, model, system outputs, or access to the system.
+
+ACCOUNTABILITY:
+
+Identify a MindAlert-specific concern involving responsibility for decisions, human oversight, governance, appeals, or consequences arising from the system.
+
+These descriptions are guidance only.
+
+They do NOT authorize you to invent facts.
+
+If the brief does not provide enough information to determine whether a specific practice exists, explicitly state that the information is not specified and describe the resulting ethical uncertainty.
+
+==================================================
+FIXED MINDALEERT PROJECT BRIEF
+==================================================
 
 """
 ${brief}
 """
 
-Additional contextual information:
+==================================================
+ADDITIONAL CONTEXTUAL INFORMATION
+==================================================
 
 ${slotSummary}
 
 ${answerSection}
+
+==================================================
+FINAL INTERNAL CHECK
+==================================================
+
+Before returning the JSON, verify internally that:
+
+- There are exactly 5 risks.
+- There is exactly one fairness risk.
+- There is exactly one privacy risk.
+- There is exactly one transparency risk.
+- There is exactly one security risk.
+- There is exactly one accountability risk.
+- Every risk is specific to MindAlert.
+- Every risk has affectedStakeholders.
+- Every risk has severity.
+- Every risk has likelihood.
+- Every risk has at least two mitigations.
+- Severity values are valid.
+- Likelihood values are valid.
+- The JSON is syntactically valid.
+- No text appears outside the JSON object.
 
 JSON output:
 `.trim()
