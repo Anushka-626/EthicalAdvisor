@@ -1,110 +1,61 @@
-import {
-  NextRequest,
-  NextResponse,
-} from "next/server"
+import { NextResponse } from "next/server"
 
-import {
-  supabase,
-} from "@/lib/supabaseClient"
+import { supabase } from "@/lib/supabaseClient"
 
-import {
-  llmService,
-} from "@/lib/llm/llmService"
+import { llmService } from "@/lib/llm/llmService"
 
 import {
   CLARIFY_FIRST_QUESTIONS,
   Slot,
 } from "@/lib/slots"
 
+import {
+  generateChatResponse,
+  generateUnguidedRiskRegister,
+} from "@/lib/llm/huggingFaceLLM"
 
-const PROMPT_VERSION = "v1.0"
+const PROMPT_VERSION = "v2.0"
 
+const UNGUIDED_PROMPT_VERSION =
+  "unguided-v1.0"
+
+const CLARIFY_PROMPT_VERSION =
+  "clarify-first-v1.0"
+
+const ONE_SHOT_PROMPT_VERSION =
+  "one-shot-baseline-v1.0"
 
 export async function POST(
-  req: NextRequest
+  request: Request
 ) {
   try {
-    const body = await req.json()
+    const body = await request.json()
 
     const {
       action = "generate",
-
       brief,
-
       mode = "one_shot",
-
       session_id,
-
       task_type,
-
       condition_order,
-
-      slots: rawSlots,
-
+      messages,
       clarificationAnswers,
     } = body
 
-
-    /* ==========================================================
-       BASIC VALIDATION
-       ========================================================== */
-
-    if (!brief?.trim()) {
-      return NextResponse.json(
-        {
-          error: "brief is required",
-        },
-        {
-          status: 400,
-        }
-      )
-    }
-
-
-    if (!session_id) {
-      return NextResponse.json(
-        {
-          error: "session_id is required",
-        },
-        {
-          status: 400,
-        }
-      )
-    }
-
-
-    if (
-      task_type !== "A" &&
-      task_type !== "B"
-    ) {
-      return NextResponse.json(
-        {
-          error: "task_type must be A or B",
-        },
-        {
-          status: 400,
-        }
-      )
-    }
-
-
-    /*
-     * condition_order must ALWAYS be one of:
-     *
-     * A_B
-     * B_A
-     *
-     * A_B = participant completes A first, then B
-     * B_A = participant completes B first, then A
+    /**
+     * -----------------------------------------------------
+     * VALIDATION
+     * -----------------------------------------------------
      */
 
     if (
-      condition_order !== "A_B" &&
-      condition_order !== "B_A"
+      !brief ||
+      typeof brief !== "string"
     ) {
       return NextResponse.json(
         {
-          error: "condition_order must be A_B or B_A",
+          error:
+            "A project brief is required.",
         },
         {
           status: 400,
@@ -112,439 +63,515 @@ export async function POST(
       )
     }
 
-
-    /* ==========================================================
-       ACTION 1
-       EXTRACT SLOTS
-       
-       ONLY USED FOR CLARIFY-FIRST / TASK B
-       ========================================================== */
-
-    if (action === "extract_slots") {
-
-      if (mode !== "clarify_first") {
-        return NextResponse.json(
-          {
-            error:
-              "Slot extraction is only available in clarify_first mode.",
-          },
-          {
-            status: 400,
-          }
-        )
-      }
-
-
-      const startTime = Date.now()
-
-
-      const {
-        slots,
-      } = await llmService.extractSlots({
-        brief,
-      })
-
-
-      /*
-       * IMPORTANT:
-       *
-       * We deliberately use the fixed clarification questions.
-       *
-       * The questions do NOT change from participant to participant.
-       */
-
-      const clarificationQuestions =
-        CLARIFY_FIRST_QUESTIONS
-
-
-      const latencyMs =
-        Date.now() - startTime
-
-
-      console.log(
-        `[LLM] Clarification extraction completed in ${latencyMs} ms`
+    if (!supabase) {
+      return NextResponse.json(
+        {
+          error:
+            "Supabase is not configured.",
+        },
+        {
+          status: 500,
+        }
       )
-
-
-      return NextResponse.json({
-        slots,
-
-        clarificationQuestions,
-
-        latencyMs,
-
-        /*
-         * Return condition_order as well so the frontend
-         * can verify which experimental order is being used.
-         */
-        conditionOrder: condition_order,
-
-      })
     }
 
+    /**
+     * -----------------------------------------------------
+     * UNGUIDED CHAT
+     * -----------------------------------------------------
+     */
 
-    /* ==========================================================
-       ACTION 2
-       GENERATE RISK REGISTER
-       ========================================================== */
-
-    if (action === "generate") {
-
-      let slots: Slot[]
-
-
-      /* ========================================================
-         CONDITION A — ONE-SHOT
-         
-         IMPORTANT:
-         NO slot extraction.
-         
-         The brief goes directly to the final LLM generation.
-         
-         Therefore:
-         
-         Condition A = 1 LLM call
-         ======================================================== */
-
-      if (mode === "one_shot") {
-
-        slots = []
-
-
-        console.log(
-          "[LLM] Condition A: direct one-shot generation"
-        )
-
-      }
-
-
-      /* ========================================================
-         CONDITION B — CLARIFY-FIRST
-         
-         Slots were extracted before this request.
-         Participant answers are also provided.
-         ======================================================== */
-
-      else if (mode === "clarify_first") {
-
-        if (!Array.isArray(rawSlots)) {
-          return NextResponse.json(
-            {
-              error:
-                "slots are required for clarify_first mode",
-            },
-            {
-              status: 400,
-            }
-          )
-        }
-
-
-        slots = rawSlots as Slot[]
-
-
-        console.log(
-          "[LLM] Condition B: generating using extracted slots and participant answers"
-        )
-
-      }
-
-
-      else {
-
-        return NextResponse.json(
-          {
-            error:
-              `Unknown mode: ${mode}`,
-          },
-          {
-            status: 400,
-          }
-        )
-      }
-
-
-      /* ==========================================================
-         MISSING SLOTS
-         ========================================================== */
-
-      const missingSlots =
-        slots
-          .filter(
-            (slot) =>
-              slot.missing
-          )
-          .map(
-            (slot) =>
-              slot.id
-          )
-
-
-      /* ==========================================================
-         CLARIFICATION QUESTIONS
-         ========================================================== */
-
-      const clarificationQuestions =
-        mode === "clarify_first"
-          ? CLARIFY_FIRST_QUESTIONS
+    if (action === "chat") {
+      const conversation =
+        Array.isArray(messages)
+          ? messages
           : []
-
-
-      /* ==========================================================
-         FINAL LLM GENERATION
-         
-         BOTH CONDITIONS USE THE SAME LLM.
-         
-         A:
-         brief → risk register
-         
-         B:
-         brief + slots + participant answers → risk register
-         ========================================================== */
 
       const startTime =
         Date.now()
 
-
-      const {
-        register,
-      } =
-        await llmService.generateRiskRegister({
-
+      const response =
+        await generateChatResponse(
           brief,
-
-          mode,
-
-          slots,
-
-          clarificationAnswers:
-            clarificationAnswers ?? {},
-
-        })
-
-
-      const latencyMs =
-        Date.now() -
-        startTime
-
-
-      console.log(
-        `[LLM] Risk register generated in ${latencyMs} ms`
-      )
-
-
-      /* ==========================================================
-         SUPABASE CHECK
-         ========================================================== */
-
-      if (!supabase) {
-        return NextResponse.json(
-          {
-            error:
-              "Supabase not configured",
-          },
-          {
-            status: 500,
-          }
+          conversation
         )
+
+      const latency =
+        Date.now() - startTime
+
+      if (session_id) {
+        const {
+          error,
+        } = await supabase
+          .from(
+            "ethics_interactions"
+          )
+          .insert({
+            session_id,
+
+            task_type:
+              task_type ??
+              "unguided",
+
+            role: "assistant",
+
+            content: response,
+
+            latency_ms: latency,
+
+            created_at:
+              new Date().toISOString(),
+          })
+
+        if (error) {
+          console.error(
+            "Failed to save unguided interaction:",
+            error
+          )
+        }
       }
 
+      return NextResponse.json({
+        response,
+        latency_ms: latency,
+      })
+    }
 
-      /* ==========================================================
-         MODEL NAME
-         ========================================================== */
+    /**
+     * -----------------------------------------------------
+     * UNGUIDED FINAL RISK REGISTER
+     * -----------------------------------------------------
+     */
 
-      const modelName =
-        process.env.HF_MODEL ??
-        process.env.LLM_MODEL ??
-        "unknown"
+    if (
+      action ===
+      "generate_unguided"
+    ) {
+      const conversation =
+        Array.isArray(messages)
+          ? messages
+          : []
 
+      const startTime =
+        Date.now()
 
-      /* ==========================================================
-         SAVE EXPERIMENT RECORD
-         ========================================================== */
+      const register =
+        await generateUnguidedRiskRegister(
+          brief,
+          conversation
+        )
 
-      const {
-        error: insertError,
-      } =
-        await supabase
+      const latency =
+        Date.now() - startTime
+
+      if (session_id) {
+        const {
+          error,
+        } = await supabase
           .from(
             "ethics_submissions"
           )
           .insert({
-
-            /* ----------------------------------------------
-               PARTICIPANT / SESSION
-               ---------------------------------------------- */
-
-            session_id:
-              session_id,
-
-
-            /* ----------------------------------------------
-               TASK
-               ---------------------------------------------- */
+            session_id,
 
             task_type:
-              task_type,
+              task_type ??
+              "unguided",
 
+            input_text: brief,
 
-            input_text:
-              brief,
-
-
-            /* ----------------------------------------------
-               EXPERIMENTAL CONDITION
-               ---------------------------------------------- */
-
-            /*
-             * mode = the condition used for THIS task
-             *
-             * one_shot
-             * clarify_first
-             */
-
-            mode,
-
-
-            /*
-             * condition_order = order assigned to THIS participant
-             *
-             * A_B
-             * B_A
-             *
-             * THIS WAS THE MISSING FIELD.
-             */
+            mode: "unguided",
 
             condition_order:
-              condition_order,
+              condition_order ??
+              null,
 
+            slots: [],
 
-            /*
-             * condition_type remains the current task/condition.
-             */
-
-            condition_type:
-              task_type,
-
-
-            /* ----------------------------------------------
-               LLM INFORMATION
-               ---------------------------------------------- */
-
-            model_name:
-              modelName,
-
-
-            /* ----------------------------------------------
-               SLOT INFORMATION
-               ---------------------------------------------- */
-
-            slots,
-
-
-            missing_slots:
-              missingSlots,
-
-
-            /* ----------------------------------------------
-               CLARIFICATION INFORMATION
-               ---------------------------------------------- */
+            missing_slots: [],
 
             clarification_questions:
-              clarificationQuestions,
-
+              [],
 
             clarification_answers:
-              clarificationAnswers ??
               {},
 
+            prompt_version:
+              UNGUIDED_PROMPT_VERSION,
 
-            /* ----------------------------------------------
-               VERSION / PERFORMANCE
-               ---------------------------------------------- */
+            latency_ms: latency,
+
+            ai_output: register,
+
+            created_at:
+              new Date().toISOString(),
+          })
+
+        if (error) {
+          console.error(
+            "Failed to save unguided submission:",
+            error
+          )
+        }
+      }
+
+      return NextResponse.json({
+        register,
+        latency_ms: latency,
+      })
+    }
+
+    /**
+     * -----------------------------------------------------
+     * EXTRACT SLOTS
+     * -----------------------------------------------------
+     *
+     * The LLM extracts contextual slots.
+     *
+     * BUT the clarification questions are fixed.
+     */
+
+    if (
+      action ===
+      "extract_slots"
+    ) {
+      const {
+        slots,
+      } =
+        await llmService.extractSlots({
+          brief,
+        })
+
+      return NextResponse.json({
+        slots,
+
+        clarificationQuestions:
+          CLARIFY_FIRST_QUESTIONS,
+      })
+    }
+
+    /**
+     * -----------------------------------------------------
+     * GENERATE RISK REGISTER
+     * -----------------------------------------------------
+     */
+
+    if (
+      action === "generate"
+    ) {
+      const {
+        slots,
+      } =
+        await llmService.extractSlots({
+          brief,
+        })
+
+      /**
+       * ALWAYS use the same three questions.
+       *
+       * We intentionally do not dynamically select
+       * questions based on missing slots.
+       */
+      const fixedQuestions =
+        CLARIFY_FIRST_QUESTIONS
+
+      /**
+       * Participant answers.
+       *
+       * Expected structure:
+       *
+       * {
+       *   provenance: "...",
+       *   automation: "...",
+       *   consequences: "..."
+       * }
+       */
+      const answers =
+        clarificationAnswers ??
+        {}
+
+      const effectiveMode =
+        mode ===
+        "clarify_first"
+          ? "clarify_first"
+          : "one_shot"
+
+      const startTime =
+        Date.now()
+
+      /**
+       * Same LLM is used for both conditions.
+       */
+      const {
+        register,
+      } =
+        await llmService.generateRiskRegister(
+          {
+            brief,
+
+            mode:
+              effectiveMode,
+
+            /**
+             * Condition A does not receive
+             * clarification context.
+             *
+             * Condition B receives the extracted
+             * slots and participant answers.
+             */
+            slots:
+              effectiveMode ===
+              "clarify_first"
+                ? slots
+                : [],
+
+            clarificationAnswers:
+              effectiveMode ===
+              "clarify_first"
+                ? answers
+                : {},
+          }
+        )
+
+      const latency =
+        Date.now() - startTime
+
+      const promptVersion =
+        effectiveMode ===
+        "clarify_first"
+          ? CLARIFY_PROMPT_VERSION
+          : ONE_SHOT_PROMPT_VERSION
+
+      /**
+       * ---------------------------------------------------
+       * SAVE RESULT
+       * ---------------------------------------------------
+       */
+
+      if (session_id) {
+        const {
+          error,
+        } = await supabase
+          .from(
+            "ethics_submissions"
+          )
+          .insert({
+            session_id,
+
+            task_type:
+              task_type ??
+              (effectiveMode ===
+              "clarify_first"
+                ? "B"
+                : "A"),
+
+            input_text: brief,
+
+            mode:
+              effectiveMode,
+
+            condition_order:
+              condition_order ??
+              null,
+
+            slots:
+              effectiveMode ===
+              "clarify_first"
+                ? slots
+                : [],
+
+            missing_slots:
+              effectiveMode ===
+              "clarify_first"
+                ? slots
+                    .filter(
+                      (
+                        slot: Slot
+                      ) =>
+                        slot.missing
+                    )
+                    .map(
+                      (
+                        slot: Slot
+                      ) =>
+                        slot.id
+                    )
+                : [],
+
+            /**
+             * IMPORTANT:
+             *
+             * The exact same questions are
+             * stored for every participant.
+             */
+            clarification_questions:
+              effectiveMode ===
+              "clarify_first"
+                ? fixedQuestions
+                : [],
+
+            clarification_answers:
+              effectiveMode ===
+              "clarify_first"
+                ? answers
+                : {},
 
             prompt_version:
-              PROMPT_VERSION,
-
+              promptVersion,
 
             latency_ms:
-              latencyMs,
-
-
-            /* ----------------------------------------------
-               FINAL OUTPUT
-               ---------------------------------------------- */
+              latency,
 
             ai_output:
               register,
 
+            created_at:
+              new Date().toISOString(),
           })
 
+        if (error) {
+          console.error(
+            "Failed to save risk register:",
+            error
+          )
 
-      /* ==========================================================
-         SUPABASE ERROR
-         ========================================================== */
+          return NextResponse.json(
+            {
+              error:
+                "Risk register generated, but saving the result failed.",
 
-      if (insertError) {
+              register,
 
-        console.error(
-          "[Supabase] Insert error:",
-          insertError
-        )
-
-
-        throw new Error(
-          `Failed to save ethics submission: ${insertError.message}`
-        )
+              latency_ms:
+                latency,
+            },
+            {
+              status: 500,
+            }
+          )
+        }
       }
 
-
-      console.log(
-        "[Supabase] Ethics submission saved successfully"
-      )
-
-
-      /* ==========================================================
-         RESPONSE
-         ========================================================== */
-
       return NextResponse.json({
-
         register,
 
-        slots,
-
-        missingSlots,
-
-        clarificationQuestions,
-
-        mode,
-
-        /*
-         * Return the order to the frontend too.
+        /**
+         * Return the fixed questions so
+         * frontend always has the same set.
          */
+        clarificationQuestions:
+          effectiveMode ===
+          "clarify_first"
+            ? fixedQuestions
+            : [],
 
-        conditionOrder:
-          condition_order,
+        clarificationAnswers:
+          effectiveMode ===
+          "clarify_first"
+            ? answers
+            : {},
 
-        latencyMs,
-
-        promptVersion:
-          PROMPT_VERSION,
-
-        conditionType:
-          task_type,
-
-        modelName,
-
+        latency_ms:
+          latency,
       })
     }
 
+    /**
+     * -----------------------------------------------------
+     * HIDDEN ONE-SHOT BASELINE
+     * -----------------------------------------------------
+     */
 
-    /* ==========================================================
-       UNKNOWN ACTION
-       ========================================================== */
+    if (
+      action ===
+      "generate_baseline"
+    ) {
+      const startTime =
+        Date.now()
+
+      const {
+        register,
+      } =
+        await llmService.generateRiskRegister(
+          {
+            brief,
+
+            mode: "one_shot",
+
+            slots: [],
+
+            clarificationAnswers:
+              {},
+          }
+        )
+
+      const latency =
+        Date.now() - startTime
+
+      if (session_id) {
+        const {
+          error,
+        } = await supabase
+          .from(
+            "ethics_baseline"
+          )
+          .insert({
+            session_id,
+
+            task_type:
+              task_type ??
+              "baseline",
+
+            input_text: brief,
+
+            mode: "one_shot",
+
+            condition_order:
+              condition_order ??
+              null,
+
+            slots: [],
+
+            clarification_questions:
+              [],
+
+            clarification_answers:
+              {},
+
+            prompt_version:
+              ONE_SHOT_PROMPT_VERSION,
+
+            latency_ms:
+              latency,
+
+            ai_output:
+              register,
+
+            created_at:
+              new Date().toISOString(),
+          })
+
+        if (error) {
+          console.error(
+            "Failed to save baseline:",
+            error
+          )
+        }
+      }
+
+      return NextResponse.json({
+        register,
+
+        latency_ms:
+          latency,
+      })
+    }
+
+    /**
+     * -----------------------------------------------------
+     * UNKNOWN ACTION
+     * -----------------------------------------------------
+     */
 
     return NextResponse.json(
       {
@@ -555,26 +582,20 @@ export async function POST(
         status: 400,
       }
     )
-
-
-  } catch (err) {
-
-    const message =
-      err instanceof Error
-        ? err.message
-        : "Internal server error"
-
-
+  } catch (error) {
     console.error(
-      "[ethics-advisor]",
-      message
+      "ANALYZE API ERROR:",
+      error
     )
 
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unknown server error."
 
     return NextResponse.json(
       {
-        error:
-          message,
+        error: message,
       },
       {
         status: 500,

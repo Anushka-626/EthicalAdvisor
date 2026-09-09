@@ -15,11 +15,14 @@ import {
 
 import {
   buildSlotExtractionPrompt,
-  buildRiskRegisterPrompt,
+  buildOneShotBaselinePrompt,
+  buildUnguidedChatPrompt,
+  buildUnguidedRiskRegisterPrompt,
+  buildClarifyFirstRiskRegisterPrompt,
 } from "../prompts"
 
-
-const HF_TOKEN = process.env.HF_TOKEN
+const HF_TOKEN =
+  process.env.HF_TOKEN
 
 const HF_MODEL =
   process.env.HF_MODEL ||
@@ -28,111 +31,116 @@ const HF_MODEL =
 const HF_URL =
   "https://router.huggingface.co/v1/chat/completions"
 
-
 /**
- * Send a prompt to Hugging Face.
+ * Calls the Hugging Face OpenAI-compatible API.
  *
- * This function runs on the server through
- * /api/analyze.
- *
- * The Hugging Face token is NEVER exposed
- * to the browser.
+ * jsonMode = true is used whenever the expected
+ * response is structured JSON.
  */
 async function callHuggingFace(
-  prompt: string
+  prompt: string,
+  jsonMode = false
 ): Promise<string> {
-
   if (!HF_TOKEN) {
     throw new Error(
-      "HF_TOKEN is missing. Please add HF_TOKEN to .env.local and restart the server."
+      "HF_TOKEN is missing. Please add HF_TOKEN to your environment variables."
     )
   }
 
-  const response = await fetch(
-    HF_URL,
-    {
+  const requestBody: Record<
+    string,
+    unknown
+  > = {
+    model: HF_MODEL,
+
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are an expert responsible-AI ethics advisor. Follow the requested output format exactly. Do not invent information.",
+      },
+
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+
+    temperature: 0,
+
+    max_tokens: 2000,
+  }
+
+  /**
+   * Ask the model to return a JSON object
+   * for structured outputs.
+   */
+  if (jsonMode) {
+    requestBody.response_format = {
+      type: "json_object",
+    }
+  }
+
+  const response =
+    await fetch(HF_URL, {
       method: "POST",
 
       headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${HF_TOKEN}`,
+        "Content-Type":
+          "application/json",
+
+        Authorization:
+          `Bearer ${HF_TOKEN}`,
       },
 
-      body: JSON.stringify({
-        model: HF_MODEL,
-
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an expert responsible-AI ethics advisor. Follow the requested output format exactly. Do not invent information.",
-          },
-
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-
-        temperature: 0,
-
-        max_tokens: 2000,
-      }),
-    }
-  )
-
+      body:
+        JSON.stringify(
+          requestBody
+        ),
+    })
 
   if (!response.ok) {
-
-    const errorText =
-      await response.text()
-
-    console.error(
-      "Hugging Face error:",
-      response.status,
-      errorText
-    )
-
-    let providerMessage =
-      errorText.trim()
+    let errorMessage = ""
 
     try {
-
       const errorData =
-        JSON.parse(errorText)
+        await response.json()
 
-      providerMessage =
-        errorData?.error?.message ||
+      errorMessage =
+        errorData?.error
+          ?.message ||
         errorData?.error ||
-        providerMessage
-
+        JSON.stringify(
+          errorData
+        )
     } catch {
-      // Keep the plain-text provider response.
+      errorMessage =
+        await response.text()
     }
 
+    console.error(
+      "Hugging Face API error:",
+      response.status,
+      errorMessage
+    )
+
     throw new Error(
-      `Hugging Face API error: ${response.status}${
-        providerMessage
-          ? ` - ${providerMessage}`
-          : ""
-      }`
+      `Hugging Face API error (${response.status}): ${errorMessage}`
     )
   }
-
 
   const data =
     await response.json()
 
-
   const content =
-    data?.choices?.[0]?.message?.content
-
+    data?.choices?.[0]
+      ?.message?.content
 
   if (
     !content ||
-    typeof content !== "string"
+    typeof content !==
+      "string"
   ) {
-
     console.error(
       "Unexpected Hugging Face response:",
       data
@@ -143,43 +151,35 @@ async function callHuggingFace(
     )
   }
 
-
   return content.trim()
 }
 
-
 /**
- * Remove markdown code fences if the
- * model returns JSON inside ```json ... ```
+ * Removes Markdown JSON code fences.
  */
 function cleanJson(
   text: string
 ): string {
-
   let cleaned =
     text.trim()
 
-
   if (
-    cleaned.startsWith("```json")
+    cleaned.startsWith(
+      "```json"
+    )
   ) {
-
     cleaned =
       cleaned.substring(7)
-
   } else if (
     cleaned.startsWith("```")
   ) {
-
     cleaned =
       cleaned.substring(3)
   }
 
-
   if (
     cleaned.endsWith("```")
   ) {
-
     cleaned =
       cleaned.substring(
         0,
@@ -187,106 +187,156 @@ function cleanJson(
       )
   }
 
-
   return cleaned.trim()
 }
 
-
 /**
- * Extract the JSON object from the model response.
+ * Extract the first complete JSON object.
+ *
+ * Handles nested objects and braces inside
+ * quoted strings.
  */
 function extractJsonObject(
   text: string
 ): string {
-
   const cleaned =
     cleanJson(text)
-
 
   const firstBrace =
     cleaned.indexOf("{")
 
-
-  const lastBrace =
-    cleaned.lastIndexOf("}")
-
-
-  if (
-    firstBrace === -1 ||
-    lastBrace === -1
-  ) {
-
+  if (firstBrace === -1) {
     throw new Error(
       "No JSON object found in the LLM response."
     )
   }
 
+  let depth = 0
 
-  return cleaned.substring(
-    firstBrace,
-    lastBrace + 1
+  let inString = false
+
+  let escaped = false
+
+  for (
+    let i = firstBrace;
+    i < cleaned.length;
+    i++
+  ) {
+    const character =
+      cleaned[i]
+
+    if (escaped) {
+      escaped = false
+      continue
+    }
+
+    if (
+      character === "\\" &&
+      inString
+    ) {
+      escaped = true
+      continue
+    }
+
+    if (
+      character === '"'
+    ) {
+      inString =
+        !inString
+
+      continue
+    }
+
+    if (inString) {
+      continue
+    }
+
+    if (
+      character === "{"
+    ) {
+      depth++
+    }
+
+    if (
+      character === "}"
+    ) {
+      depth--
+
+      if (depth === 0) {
+        return cleaned.substring(
+          firstBrace,
+          i + 1
+        )
+      }
+    }
+  }
+
+  throw new Error(
+    "The LLM response contained incomplete JSON."
   )
 }
 
-
 /**
- * STEP 1
- *
- * Extract contextual slots from the project brief.
- *
- * IMPORTANT:
- * This function is ONLY used for
- * Condition B (clarify-first).
- *
- * Condition A does NOT call this function.
+ * Generic JSON parser.
  */
-export async function extractSlots(
-  input: ExtractSlotsInput
-): Promise<ExtractSlotsOutput> {
-
-  const prompt =
-    buildSlotExtractionPrompt(
-      input.brief
-    )
-
-
-  console.log(
-    `[HuggingFace] Extracting contextual slots using model: ${HF_MODEL}`
-  )
-
-
-  const rawResponse =
-    await callHuggingFace(
-      prompt
-    )
-
-
-  let parsed:
-    Record<string, unknown>
-
-
+function parseJsonResponse<T>(
+  rawResponse: string,
+  errorMessage: string
+): T {
   try {
-
     const jsonText =
       extractJsonObject(
         rawResponse
       )
 
-    parsed =
-      JSON.parse(jsonText)
-
-  } catch {
+    return JSON.parse(
+      jsonText
+    ) as T
+  } catch (error) {
+    console.error(
+      errorMessage,
+      error
+    )
 
     console.error(
-      "Invalid slot extraction response:",
+      "Raw LLM response:",
       rawResponse
     )
 
     throw new Error(
-      "The LLM returned invalid JSON while extracting contextual information."
+      errorMessage
     )
   }
+}
 
+/**
+ * =========================================================
+ * SLOT EXTRACTION
+ * =========================================================
+ */
+
+export async function extractSlots(
+  input: ExtractSlotsInput
+): Promise<ExtractSlotsOutput> {
+  const prompt =
+    buildSlotExtractionPrompt(
+      input.brief
+    )
+
+  const rawResponse =
+    await callHuggingFace(
+      prompt,
+      true
+    )
+
+  const parsed =
+    parseJsonResponse<
+      Record<string, unknown>
+    >(
+      rawResponse,
+
+      "The LLM returned invalid JSON while extracting contextual information."
+    )
 
   const slots: Slot[] =
     (
@@ -294,20 +344,17 @@ export async function extractSlots(
         SLOT_DEFINITIONS
       ) as SlotId[]
     ).map((id) => {
-
       const rawValue =
         parsed[id]
 
-
       const value =
-        typeof rawValue === "string" &&
+        typeof rawValue ===
+          "string" &&
         rawValue.trim() !== ""
           ? rawValue.trim()
           : "not specified"
 
-
       return {
-
         id,
 
         label:
@@ -323,173 +370,241 @@ export async function extractSlots(
       }
     })
 
-
-  console.log(
-    "[HuggingFace] Slots extracted:",
-    slots
-  )
-
-
   return {
     slots,
   }
 }
 
-
 /**
- * STEP 2
- *
- * Generate the final ethical risk register.
- *
- * Condition A:
- *   slots = undefined or []
- *   clarificationAnswers = {}
- *
- * Condition B:
- *   slots = extracted contextual slots
- *   clarificationAnswers = participant answers
- *
- * The SAME LLM model is used for both conditions.
+ * =========================================================
+ * RISK REGISTER GENERATION
+ * =========================================================
  */
+
 export async function generateRiskRegister(
   input: GenerateRiskRegisterInput
 ): Promise<GenerateRiskRegisterOutput> {
+  let prompt: string
 
   /**
-   * IMPORTANT:
+   * -------------------------------------------------------
+   * CONDITION A — ONE SHOT
+   * -------------------------------------------------------
    *
-   * slots are optional because Condition A
-   * must NOT perform a separate slot-extraction call.
+   * Fixed MindAlert brief
+   * +
+   * same LLM
+   * ->
+   * immediate risk register
    *
-   * If slots are not supplied, an empty object
-   * is passed to the final prompt.
+   * No participant clarification answers.
    */
-  const slotValues:
-    Partial<Record<SlotId, string>> =
-      input.slots &&
-      input.slots.length > 0
-        ? Object.fromEntries(
-            input.slots.map(
-              (slot) => [
-                slot.id,
-                slot.value ??
-                  "not specified",
-              ]
-            )
-          )
-        : {}
 
+  if (
+    input.mode ===
+    "one_shot"
+  ) {
+    prompt =
+      buildOneShotBaselinePrompt(
+        input.brief
+      )
+  } else {
+    /**
+     * -----------------------------------------------------
+     * CONDITION B — CLARIFY FIRST
+     * -----------------------------------------------------
+     *
+     * Fixed MindAlert brief
+     * +
+     * participant answers to the same 3 questions
+     * ->
+     * final risk register
+     */
 
-  const prompt =
-    buildRiskRegisterPrompt(
-      input.brief,
-      slotValues,
+    const answers =
       input.clarificationAnswers ??
-        {}
-    )
+      {}
 
+    /**
+     * The IDs correspond to:
+     *
+     * provenance
+     * automation
+     * consequences
+     *
+     * The actual fixed question text is already
+     * controlled by the frontend/backend.
+     */
+    const questions =
+      Object.keys(answers).map(
+        (id) => ({
+          id,
 
-  console.log(
-    `[HuggingFace] Generating risk register using model: ${HF_MODEL}`
-  )
+          question: id,
+        })
+      )
 
-  console.log(
-    `[HuggingFace] Mode: ${input.mode}`
-  )
+    prompt =
+      buildClarifyFirstRiskRegisterPrompt(
+        input.brief,
 
+        questions,
+
+        answers
+      )
+  }
 
   const rawResponse =
     await callHuggingFace(
-      prompt
+      prompt,
+      true
     )
 
+  const parsed =
+    parseJsonResponse<
+      Partial<RiskRegister>
+    >(
+      rawResponse,
 
-  let parsed:
-    Partial<RiskRegister>
-
-
-  try {
-
-    const jsonText =
-      extractJsonObject(
-        rawResponse
-      )
-
-    parsed =
-      JSON.parse(jsonText)
-
-  } catch {
-
-    console.error(
-      "Invalid risk register response:",
-      rawResponse
-    )
-
-    throw new Error(
       "The LLM returned invalid JSON while generating the ethical risk register."
     )
-  }
 
-
-  /**
-   * Build the final structured register.
-   *
-   * For Condition A, input.slots may be undefined,
-   * therefore slots becomes [].
-   *
-   * For Condition B, the extracted slots are preserved.
-   */
   const register:
     RiskRegister = {
+    projectTitle:
+      typeof parsed.projectTitle ===
+      "string"
+        ? parsed.projectTitle
+        : "MindAlert Ethical Risk Analysis",
 
-      projectTitle:
-        typeof parsed.projectTitle ===
-        "string"
-          ? parsed.projectTitle
-          : "MindAlert Ethical Risk Analysis",
+    generatedAt:
+      typeof parsed.generatedAt ===
+      "string"
+        ? parsed.generatedAt
+        : new Date().toISOString(),
 
-      generatedAt:
-        typeof parsed.generatedAt ===
-        "string"
-          ? parsed.generatedAt
-          : new Date().toISOString(),
+    mode:
+      input.mode,
 
-      /**
-       * Never allow the LLM to determine
-       * the experimental condition.
-       *
-       * The application supplies it.
-       */
-      mode:
-        input.mode,
+    slots:
+      input.slots,
 
-      slots:
-        input.slots ??
-        [],
+    risks:
+      Array.isArray(
+        parsed.risks
+      )
+        ? parsed.risks
+        : [],
 
-      risks:
-        Array.isArray(
-          parsed.risks
-        )
-          ? parsed.risks
-          : [],
-
-      prioritisedActions:
-        Array.isArray(
-          parsed.prioritisedActions
-        )
-          ? parsed.prioritisedActions
-          : [],
-    }
-
-
-  console.log(
-    "[HuggingFace] Risk register generated:",
-    register
-  )
-
+    prioritisedActions:
+      Array.isArray(
+        parsed.prioritisedActions
+      )
+        ? parsed.prioritisedActions
+        : [],
+  }
 
   return {
     register,
+  }
+}
+
+/**
+ * =========================================================
+ * UNGUIDED CHAT
+ * =========================================================
+ */
+
+export async function generateChatResponse(
+  brief: string,
+
+  conversation: Array<{
+    role:
+      | "user"
+      | "assistant"
+
+    content: string
+  }>
+): Promise<string> {
+  const prompt =
+    buildUnguidedChatPrompt(
+      brief,
+      conversation
+    )
+
+  return callHuggingFace(
+    prompt,
+    false
+  )
+}
+
+/**
+ * =========================================================
+ * UNGUIDED FINAL RISK REGISTER
+ * =========================================================
+ */
+
+export async function generateUnguidedRiskRegister(
+  brief: string,
+
+  conversation: Array<{
+    role:
+      | "user"
+      | "assistant"
+
+    content: string
+  }>
+): Promise<RiskRegister> {
+  const prompt =
+    buildUnguidedRiskRegisterPrompt(
+      brief,
+      conversation
+    )
+
+  const rawResponse =
+    await callHuggingFace(
+      prompt,
+      true
+    )
+
+  const parsed =
+    parseJsonResponse<
+      Partial<RiskRegister>
+    >(
+      rawResponse,
+
+      "The LLM returned invalid JSON while generating the unguided risk register."
+    )
+
+  return {
+    projectTitle:
+      typeof parsed.projectTitle ===
+      "string"
+        ? parsed.projectTitle
+        : "MindAlert Ethical Risk Analysis",
+
+    generatedAt:
+      typeof parsed.generatedAt ===
+      "string"
+        ? parsed.generatedAt
+        : new Date().toISOString(),
+
+    mode: "unguided",
+
+    slots: [],
+
+    risks:
+      Array.isArray(
+        parsed.risks
+      )
+        ? parsed.risks
+        : [],
+
+    prioritisedActions:
+      Array.isArray(
+        parsed.prioritisedActions
+      )
+        ? parsed.prioritisedActions
+        : [],
   }
 }

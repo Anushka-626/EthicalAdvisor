@@ -49,7 +49,10 @@ export interface RiskItem {
 export interface RiskRegister {
   projectTitle: string
   generatedAt: string
-  mode: "one_shot" | "clarify_first"
+  mode:
+    | "one_shot"
+    | "clarify_first"
+    | "unguided"
   slots: Slot[]
   risks: RiskItem[]
   prioritisedActions: string[]
@@ -57,7 +60,10 @@ export interface RiskRegister {
 
 export const SLOT_DEFINITIONS: Record<
   SlotId,
-  { label: string; description: string }
+  {
+    label: string
+    description: string
+  }
 > = {
   stakeholders: {
     label: "Stakeholders",
@@ -99,9 +105,8 @@ export const SLOT_DEFINITIONS: Record<
 /**
  * General question bank.
  *
- * These questions can still be used elsewhere in the application,
- * but they are NOT used to determine the experimental questions
- * shown to participants in Condition B.
+ * This can remain available for other functionality,
+ * but it is NOT used for the fixed Task B experiment.
  */
 export const QUESTION_BANK: ClarificationQuestion[] = [
   {
@@ -142,28 +147,38 @@ export const QUESTION_BANK: ClarificationQuestion[] = [
 ]
 
 /**
- * Fixed clarification questions used in the actual
- * Condition B experimental task.
+ * =========================================================
+ * FIXED CONDITION B QUESTIONS
+ * =========================================================
  *
- * The same questions are shown to every participant.
+ * These three questions are identical for EVERY participant.
+ *
+ * They are intentionally simple so participants provide
+ * additional contextual information without having to
+ * design an entire ethics policy.
+ *
+ * DO NOT generate these questions dynamically with the LLM.
  */
 export const CLARIFY_FIRST_QUESTIONS: ClarificationQuestion[] = [
   {
     slotId: "provenance",
+
     question:
-      "How was the data collected or labelled? Was informed consent obtained from the individuals whose data is used?",
+      "What should students know about how their personal data is collected and used by MindAlert?",
+  },
+
+  {
+    slotId: "automation",
+
+    question:
+      "Who should check a student's result before MindAlert takes action?",
   },
 
   {
     slotId: "consequences",
-    question:
-      "How significant and reversible are the decisions made using your model's outputs? For example, can an affected person appeal or overturn a decision?",
-  },
 
-  {
-    slotId: "feedback_loops",
     question:
-      "Will the model's outputs be fed back into future training data or used to trigger further automated processes?",
+      "What should a student be able to do if MindAlert makes a wrong prediction about them?",
   },
 ]
 
@@ -189,17 +204,18 @@ export function isSlotMissing(
 
   const lower = value.toLowerCase()
 
-  return HEDGING_PHRASES.some((phrase) =>
-    lower.includes(phrase)
+  return HEDGING_PHRASES.some(
+    (phrase) =>
+      lower.includes(phrase)
   )
 }
 
 /**
- * Legacy helper.
+ * General dynamic selection function.
  *
- * This remains available for other parts of the application,
- * but Condition B should use CLARIFY_FIRST_QUESTIONS instead
- * so that every participant receives the same questions.
+ * IMPORTANT:
+ * Condition B does NOT use this function.
+ * Condition B always uses CLARIFY_FIRST_QUESTIONS.
  */
 export function selectClarificationQuestions(
   slots: Slot[],
@@ -207,11 +223,20 @@ export function selectClarificationQuestions(
 ): ClarificationQuestion[] {
   const missingSlotIds = new Set(
     slots
-      .filter((s) => s.missing)
-      .map((s) => s.id)
+      .filter(
+        (slot) => slot.missing
+      )
+      .map(
+        (slot) => slot.id
+      )
   )
 
   return QUESTION_BANK
-    .filter((q) => missingSlotIds.has(q.slotId))
+    .filter(
+      (question) =>
+        missingSlotIds.has(
+          question.slotId
+        )
+    )
     .slice(0, maxQuestions)
 }

@@ -1,8 +1,4 @@
-import {
-  Slot,
-  RiskRegister,
-  SlotId,
-} from "../slots"
+import { Slot, RiskRegister } from "../slots"
 
 export interface ExtractSlotsInput {
   brief: string
@@ -15,18 +11,17 @@ export interface ExtractSlotsOutput {
 export interface GenerateRiskRegisterInput {
   brief: string
 
-  mode: "one_shot" | "clarify_first"
+  mode:
+    | "one_shot"
+    | "clarify_first"
+    | "unguided"
 
-  /**
-   * Used by the clarify-first condition.
-   *
-   * Optional because the one-shot condition must
-   * analyse the brief directly without a separate
-   * slot-extraction LLM call.
-   */
-  slots?: Slot[]
+  slots: Slot[]
 
-  clarificationAnswers?: Record<string, string>
+  clarificationAnswers?: Record<
+    string,
+    string
+  >
 }
 
 export interface GenerateRiskRegisterOutput {
