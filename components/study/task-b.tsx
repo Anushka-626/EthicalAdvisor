@@ -43,7 +43,6 @@ export function TaskB({
       </div>
 
       <EthicsAdvisor
-        mode="clarify_first"
         sessionId={sessionId}
         conditionOrder={conditionOrder}
         onComplete={onComplete}

@@ -6,6 +6,7 @@ import { Header } from "@/components/study/header"
 import { Footer } from "@/components/study/footer"
 import { StudyIntro } from "@/components/study/study-intro"
 
+import { OneShotBaseline } from "@/components/study/OneShotBaseline"
 import { TaskA } from "@/components/study/taskAquestionnaire"
 import { TaskB } from "@/components/study/task-b"
 
@@ -17,15 +18,14 @@ import {
   getStoredConditionOrder,
 } from "@/lib/studyConfig"
 
-
 type StudyPhase =
   | "intro"
+  | "baseline"
   | "taskA"
   | "surveyA"
   | "taskB"
   | "surveyB"
   | "complete"
-
 
 export default function Home() {
   const [phase, setPhase] =
@@ -37,248 +37,160 @@ export default function Home() {
   const [conditionOrder, setConditionOrder] =
     useState<ConditionOrder>("A_B")
 
-
-  /**
-   * Create or recover the anonymous session ID
-   * and determine the participant's condition order.
-   */
   useEffect(() => {
-    let id =
-      localStorage.getItem("session_id")
+    let id = localStorage.getItem("session_id")
 
     if (!id) {
       id = crypto.randomUUID()
-
-      localStorage.setItem(
-        "session_id",
-        id
-      )
+      localStorage.setItem("session_id", id)
     }
 
     setSessionId(id)
 
-
-    /**
-     * Get the stored condition order.
-     *
-     * getStoredConditionOrder() checks localStorage
-     * first and creates an order if one does not exist.
-     */
     const storedOrder =
       getStoredConditionOrder()
 
-    setConditionOrder(
-      storedOrder
-    )
+    setConditionOrder(storedOrder)
   }, [])
 
+  const scrollToTop = () => {
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    })
+  }
 
-  /**
-   * Start the study.
-   *
-   * A_B:
-   * Task A → Survey A → Task B → Survey B
-   *
-   * B_A:
-   * Task B → Survey B → Task A → Survey A
-   */
   const handleStart = () => {
-    if (!sessionId) {
-      return
-    }
+    if (!sessionId) return
 
+    /*
+     * The one-shot baseline is always generated first.
+     * It is not an experimental condition.
+     */
+    setPhase("baseline")
+    scrollToTop()
+  }
+
+  const handleBaselineComplete = () => {
+    /*
+     * After the hidden baseline:
+     *
+     * A_B -> Unguided first
+     * B_A -> Clarify-first first
+     */
     if (conditionOrder === "A_B") {
       setPhase("taskA")
     } else {
       setPhase("taskB")
     }
 
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    })
+    scrollToTop()
   }
 
-
-  /**
-   * Condition A completed.
-   *
-   * Regardless of condition order, the participant
-   * must complete Survey A after Task A.
-   */
   const handleTaskAComplete = () => {
     setPhase("surveyA")
-
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    })
+    scrollToTop()
   }
 
-
-  /**
-   * Survey A completed.
-   *
-   * If the participant is in A_B order, Task B
-   * comes next.
-   *
-   * If the participant is in B_A order, Task A
-   * was completed second, so the study is complete.
-   */
   const handleSurveyAComplete = () => {
+    /*
+     * A_B:
+     * Unguided -> Survey -> Clarify-first
+     *
+     * B_A:
+     * Clarify-first -> Survey -> Unguided
+     */
     if (conditionOrder === "A_B") {
       setPhase("taskB")
     } else {
       setPhase("complete")
     }
 
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    })
+    scrollToTop()
   }
 
-
-  /**
-   * Condition B completed.
-   *
-   * Regardless of condition order, the participant
-   * must complete Survey B after Task B.
-   */
   const handleTaskBComplete = () => {
     setPhase("surveyB")
-
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    })
+    scrollToTop()
   }
 
-
-  /**
-   * Survey B completed.
-   *
-   * If the participant is in B_A order, Task A
-   * comes next.
-   *
-   * If the participant is in A_B order, the study
-   * is complete.
-   */
   const handleSurveyBComplete = () => {
+    /*
+     * B_A:
+     * Clarify-first -> Survey -> Unguided
+     */
     if (conditionOrder === "B_A") {
       setPhase("taskA")
     } else {
       setPhase("complete")
     }
 
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    })
+    scrollToTop()
   }
-
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
-
       <Header />
 
       <main className="flex-1">
-
-        {/* ------------------------------------------------ */}
-        {/* INTRO / CONSENT */}
-        {/* ------------------------------------------------ */}
-
         {phase === "intro" && (
           <StudyIntro
             onStart={handleStart}
           />
         )}
 
-
-        {/* ------------------------------------------------ */}
-        {/* CONDITION A */}
-        {/* ------------------------------------------------ */}
+        {phase === "baseline" && (
+          <OneShotBaseline
+            sessionId={sessionId}
+            conditionOrder={conditionOrder}
+            onComplete={handleBaselineComplete}
+          />
+        )}
 
         {phase === "taskA" && (
           <TaskA
             sessionId={sessionId}
             conditionOrder={conditionOrder}
-            onComplete={
-              handleTaskAComplete
-            }
+            onComplete={handleTaskAComplete}
           />
         )}
-
-
-        {/* ------------------------------------------------ */}
-        {/* SURVEY A */}
-        {/* ------------------------------------------------ */}
 
         {phase === "surveyA" && (
           <SurveyForm
             taskType="surveyA"
             conditionOrder={conditionOrder}
             sessionId={sessionId}
-            onComplete={
-              handleSurveyAComplete
-            }
+            onComplete={handleSurveyAComplete}
           />
         )}
-
-
-        {/* ------------------------------------------------ */}
-        {/* CONDITION B */}
-        {/* ------------------------------------------------ */}
 
         {phase === "taskB" && (
           <TaskB
             sessionId={sessionId}
             conditionOrder={conditionOrder}
-            onComplete={
-              handleTaskBComplete
-            }
+            onComplete={handleTaskBComplete}
           />
         )}
-
-
-        {/* ------------------------------------------------ */}
-        {/* SURVEY B */}
-        {/* ------------------------------------------------ */}
 
         {phase === "surveyB" && (
           <SurveyForm
             taskType="surveyB"
             conditionOrder={conditionOrder}
             sessionId={sessionId}
-            onComplete={
-              handleSurveyBComplete
-            }
+            onComplete={handleSurveyBComplete}
           />
         )}
-
-
-        {/* ------------------------------------------------ */}
-        {/* COMPLETE */}
-        {/* ------------------------------------------------ */}
 
         {phase === "complete" && (
           <StudyComplete
             onRestart={() => {
-              /*
-               * Do not create a new participant session.
-               * Returning to intro keeps the same session ID
-               * and condition order.
-               */
               setPhase("intro")
             }}
           />
         )}
-
       </main>
 
       <Footer />
-
     </div>
   )
 }

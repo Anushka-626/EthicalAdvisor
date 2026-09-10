@@ -13,17 +13,31 @@ export type RiskCategory =
   | "security"
   | "accountability"
 
+/**
+ * Severity used for all experimental conditions.
+ *
+ * The same three-level scale is used for:
+ * - hidden one-shot baseline
+ * - Condition A: Unguided
+ * - Condition B: Clarify-first
+ */
 export type Severity =
   | "low"
   | "medium"
   | "high"
-  | "critical"
 
+/**
+ * Likelihood used for all experimental conditions.
+ *
+ * The same three-level scale is used for:
+ * - hidden one-shot baseline
+ * - Condition A: Unguided
+ * - Condition B: Clarify-first
+ */
 export type Likelihood =
-  | "unlikely"
-  | "possible"
-  | "likely"
-  | "almost_certain"
+  | "low"
+  | "medium"
+  | "high"
 
 export interface Slot {
   id: SlotId
@@ -162,26 +176,29 @@ export const QUESTION_BANK: ClarificationQuestion[] = [
 export const CLARIFY_FIRST_QUESTIONS: ClarificationQuestion[] = [
   {
     slotId: "provenance",
-
     question:
       "What should students know about how their personal data is collected and used by MindAlert?",
   },
 
   {
     slotId: "automation",
-
     question:
       "Who should check a student's result before MindAlert takes action?",
   },
 
   {
     slotId: "consequences",
-
     question:
       "What should a student be able to do if MindAlert makes a wrong prediction about them?",
   },
 ]
 
+/**
+ * Phrases indicating that information was not explicitly
+ * provided in the project brief.
+ *
+ * These are used when identifying missing contextual slots.
+ */
 export const HEDGING_PHRASES = [
   "it is unclear whether",
   "the brief does not specify",
@@ -216,6 +233,9 @@ export function isSlotMissing(
  * IMPORTANT:
  * Condition B does NOT use this function.
  * Condition B always uses CLARIFY_FIRST_QUESTIONS.
+ *
+ * This function is retained only for possible future/general
+ * functionality and should not be used in the experiment.
  */
 export function selectClarificationQuestions(
   slots: Slot[],

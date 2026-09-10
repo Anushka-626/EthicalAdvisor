@@ -1,213 +1,125 @@
-import { SLOT_DEFINITIONS, SlotId } from "./slots"
+import { SLOT_DEFINITIONS } from "./slots"
+
+/**
+ * =========================================================
+ * SLOT EXTRACTION
+ * =========================================================
+ */
 
 export function buildSlotExtractionPrompt(
   brief: string
 ): string {
-  const slotList = Object.entries(SLOT_DEFINITIONS)
-    .map(
-      ([id, def]) =>
-        `- "${id}": ${def.description}`
-    )
-    .join("\n")
+  const slotList =
+    Object.entries(SLOT_DEFINITIONS)
+      .map(
+        ([id, def]) =>
+          `- "${id}": ${def.description}`
+      )
+      .join("\n")
 
   return `You are an ethical risk analyst reviewing a data science project brief.
 
-Extract the following contextual slots from the brief below.
+Extract the following contextual slots from the project brief.
 
-For each slot, provide the extracted value as a short phrase or sentence.
+For each slot, provide a short phrase or sentence.
 
-If a slot is not described or cannot be inferred, return exactly:
+If the information is not explicitly stated in the brief, return exactly:
 "not specified"
 
 Do NOT speculate or invent information.
 
-Slots to extract:
+Slots:
 ${slotList}
 
-Return ONLY a valid JSON object with exactly these keys:
-stakeholders, provenance, setting, automation, consequences, feedback_loops
+Return ONLY one valid JSON object.
+
+The JSON object must contain exactly these six keys:
+
+{
+  "stakeholders": "string",
+  "provenance": "string",
+  "setting": "string",
+  "automation": "string",
+  "consequences": "string",
+  "feedback_loops": "string"
+}
 
 Project brief:
-"""
 ${brief}
-"""
 
-JSON output:`
+Remember:
+- Output JSON only.
+- No Markdown.
+- No code fences.
+- No explanation.
+- Do not add extra keys.`
 }
 
 
-/*
- * ONE-SHOT BASELINE
- *
- * IMPORTANT:
- * This prompt must use ONLY the original project brief.
- * No clarification answers.
- * No conversation.
+/**
+ * =========================================================
+ * HIDDEN ONE-SHOT BASELINE
+ * =========================================================
  */
+
 export function buildOneShotBaselinePrompt(
   brief: string
 ): string {
-  return `You are an AI ethics advisor for data science projects.
+  return `You are an expert AI ethics advisor.
 
-Analyse the project description provided and identify the relevant ethical risks.
+Generate a structured ethical risk register for the project described below.
 
-Base your analysis ONLY on information contained in the project description.
+IMPORTANT:
+Use ONLY information contained in the project brief.
+Do not ask questions.
+Do not invent project facts.
+Do not invent stakeholders, data sources, safeguards, or outcomes.
 
-Do not ask clarification questions.
-
-Do not assume missing project details.
-
-If relevant information is missing or uncertain, indicate this explicitly.
-
-For each identified ethical risk, provide:
-
-1. Risk category
-2. Risk description
-3. Affected stakeholder or stakeholders
-4. Severity as Low, Medium, or High
-5. Likelihood as Low, Medium, or High
-6. Recommended mitigation
-
-Use these risk categories where relevant:
+Identify relevant risks from these categories:
 - fairness
 - privacy
 - transparency
 - security
 - accountability
 
-Return the result as a structured ethical risk register.
+Each risk must contain:
+- category
+- description
+- affectedStakeholders
+- severity
+- likelihood
+- mitigations
 
-Return ONLY valid JSON with this structure:
+Allowed category values:
+"fairness"
+"privacy"
+"transparency"
+"security"
+"accountability"
 
-{
-  "projectTitle": "short descriptive title",
-  "risks": [
-    {
-      "category": "fairness",
-      "description": "specific risk",
-      "affectedStakeholders": ["stakeholder"],
-      "severity": "low",
-      "likelihood": "possible",
-      "mitigations": ["specific mitigation"]
-    }
-  ],
-  "prioritisedActions": [
-    "action 1",
-    "action 2",
-    "action 3"
-  ]
-}
+Allowed severity values:
+"low"
+"medium"
+"high"
 
-Project description:
-"""
-${brief}
-"""
+Allowed likelihood values:
+"low"
+"medium"
+"high"
 
-JSON output:`
-}
-
-
-/*
- * UNGUIDED CONVERSATION
- */
-export function buildUnguidedChatPrompt(
-  brief: string,
-  conversation: Array<{
-    role: "user" | "assistant"
-    content: string
-  }>
-): string {
-  const conversationText =
-    conversation
-      .map(
-        (message) =>
-          `${message.role === "user" ? "Student" : "AI ethics advisor"}: ${message.content}`
-      )
-      .join("\n\n")
-
-  return `You are an AI ethics advisor for data science projects.
-
-The student is analysing the following project:
-
-PROJECT BRIEF:
-"""
-${brief}
-"""
-
-The student is interacting with you in an unguided conversation.
-
-Answer the student's current question clearly and specifically.
-
-Help the student understand ethical risks in the project.
-
-Base your answers on the project description and established AI ethics reasoning.
-
-Do not invent facts about the project.
-
-If information is missing, clearly state that it is missing or uncertain.
-
-The student decides what to ask. Do not provide a predefined clarification-question workflow.
-
-CONVERSATION:
-${conversationText}
-
-Respond directly to the student's latest question.`
-}
-
-
-/*
- * FINAL UNGUIDED RISK REGISTER
- *
- * brief + complete conversation
- */
-export function buildUnguidedRiskRegisterPrompt(
-  brief: string,
-  conversation: Array<{
-    role: "user" | "assistant"
-    content: string
-  }>
-): string {
-  const conversationText =
-    conversation
-      .map(
-        (message) =>
-          `${message.role === "user" ? "Student" : "AI ethics advisor"}: ${message.content}`
-      )
-      .join("\n\n")
-
-  return `You are an expert AI ethics advisor.
-
-Generate a structured ethical risk register for the project below.
-
-IMPORTANT:
-The final analysis must be based on:
-
-1. The original project brief
-2. The complete unguided conversation between the student and the AI ethics advisor
-
-PROJECT BRIEF:
-"""
-${brief}
-"""
-
-COMPLETE CONVERSATION:
-"""
-${conversationText}
-"""
-
-Return ONLY valid JSON.
+Return ONLY one valid JSON object.
 
 Use exactly this structure:
 
 {
-  "projectTitle": "short descriptive title",
+  "projectTitle": "MindAlert Ethical Risk Analysis",
   "risks": [
     {
-      "category": "fairness | privacy | transparency | security | accountability",
-      "description": "clear specific risk",
-      "affectedStakeholders": ["stakeholder"],
-      "severity": "low | medium | high",
-      "likelihood": "unlikely | possible | likely",
+      "category": "privacy",
+      "description": "specific ethical risk",
+      "affectedStakeholders": ["students"],
+      "severity": "high",
+      "likelihood": "high",
       "mitigations": [
         "specific actionable mitigation"
       ]
@@ -220,19 +132,214 @@ Use exactly this structure:
   ]
 }
 
-Do not invent information that was not present in the brief or conversation.
+Rules:
+- "risks" must be an array.
+- "affectedStakeholders" must be an array of strings.
+- "mitigations" must be an array of strings.
+- "prioritisedActions" must be an array of strings.
+- Use lowercase category/severity/likelihood values exactly as specified.
+- Include only relevant risks.
+- Do not add extra JSON fields.
+- Do not use Markdown.
+- Do not use code fences.
+- Do not include any explanation outside the JSON.
 
-If the conversation discussed uncertainty or missing information, preserve that uncertainty in the risk analysis.
+Project brief:
+${brief}
 
-JSON output:`
+JSON:`
 }
 
 
-/*
- * CLARIFY-FIRST FINAL RISK REGISTER
- *
- * brief + fixed questions + participant answers
+/**
+ * =========================================================
+ * UNGUIDED LLM CHAT
+ * =========================================================
  */
+
+export function buildUnguidedChatPrompt(
+  brief: string,
+  conversation: Array<{
+    role: "user" | "assistant"
+    content: string
+  }>
+): string {
+  const conversationText =
+    conversation
+      .map(
+        (message) =>
+          `${
+            message.role === "user"
+              ? "Student"
+              : "AI ethics advisor"
+          }: ${message.content}`
+      )
+      .join("\n\n")
+
+  return `You are an AI ethics advisor for data science projects.
+
+The student is analysing this project:
+
+PROJECT BRIEF:
+${brief}
+
+The student is using an unguided AI ethics advisor.
+
+The student decides what to ask and may ask follow-up questions.
+
+There are NO predefined clarification questions in this condition.
+
+Help the student identify and understand ethical risks.
+
+Your responses should:
+- remain specific to the MindAlert project;
+- discuss relevant ethical risks;
+- discuss stakeholders where relevant;
+- discuss fairness, privacy, transparency, security, and accountability where relevant;
+- explain uncertainty when information is missing;
+- avoid inventing project facts.
+
+Clearly distinguish:
+1. facts stated in the project brief;
+2. general ethical considerations;
+3. possible recommendations.
+
+Do not tell the student which predefined questions to answer.
+
+CONVERSATION:
+${conversationText}
+
+Respond directly to the student's latest question.`
+}
+
+
+/**
+ * =========================================================
+ * FINAL UNGUIDED RISK REGISTER
+ * =========================================================
+ */
+
+export function buildUnguidedRiskRegisterPrompt(
+  brief: string,
+  conversation: Array<{
+    role: "user" | "assistant"
+    content: string
+  }>
+): string {
+  const conversationText =
+    conversation
+      .map(
+        (message) =>
+          `${
+            message.role === "user"
+              ? "Student"
+              : "AI ethics advisor"
+          }: ${message.content}`
+      )
+      .join("\n\n")
+
+  return `You are an expert AI ethics advisor.
+
+Generate the FINAL structured ethical risk register for the MindAlert project.
+
+You MUST use BOTH sources:
+
+SOURCE 1 — ORIGINAL PROJECT BRIEF
+This is the authoritative description of the project.
+
+SOURCE 2 — COMPLETE UNGUIDED CONVERSATION
+This shows which ethical issues the student explored.
+
+Use relevant information from both sources.
+
+IMPORTANT:
+- Do not invent project facts.
+- Do not invent data sources.
+- Do not invent stakeholders.
+- Do not assume safeguards already exist.
+- Student or AI suggestions are not automatically project facts.
+- Preserve uncertainty where information is missing.
+- Include only relevant ethical risks.
+
+Allowed risk categories:
+"fairness"
+"privacy"
+"transparency"
+"security"
+"accountability"
+
+Allowed severity values:
+"low"
+"medium"
+"high"
+
+Allowed likelihood values:
+"low"
+"medium"
+"high"
+
+Every risk MUST contain exactly:
+- category
+- description
+- affectedStakeholders
+- severity
+- likelihood
+- mitigations
+
+The JSON structure is:
+
+{
+  "projectTitle": "MindAlert Ethical Risk Analysis",
+  "risks": [
+    {
+      "category": "privacy",
+      "description": "specific ethical risk",
+      "affectedStakeholders": ["students"],
+      "severity": "high",
+      "likelihood": "high",
+      "mitigations": [
+        "specific actionable mitigation"
+      ]
+    }
+  ],
+  "prioritisedActions": [
+    "most important action",
+    "second most important action",
+    "third most important action"
+  ]
+}
+
+STRICT OUTPUT RULES:
+- Return exactly ONE JSON object.
+- Start the response with {.
+- End the response with }.
+- Do NOT use Markdown.
+- Do NOT use code fences.
+- Do NOT write an introduction.
+- Do NOT write an explanation after the JSON.
+- Do NOT add extra keys.
+- "risks" must be an array.
+- "affectedStakeholders" must be an array of strings.
+- "mitigations" must be an array of strings.
+- "prioritisedActions" must be an array of strings.
+- Use lowercase values for category, severity, and likelihood.
+
+ORIGINAL PROJECT BRIEF:
+${brief}
+
+COMPLETE UNGUIDED CONVERSATION:
+${conversationText}
+
+Now return ONLY the JSON object.`
+}
+
+
+/**
+ * =========================================================
+ * CLARIFY-FIRST FINAL RISK REGISTER
+ * =========================================================
+ */
+
 export function buildClarifyFirstRiskRegisterPrompt(
   brief: string,
   questions: Array<{
@@ -245,7 +352,8 @@ export function buildClarifyFirstRiskRegisterPrompt(
     questions
       .map(
         (question, index) =>
-          `Question ${index + 1}: ${question.question}\nAnswer: ${
+          `Question ${index + 1}: ${question.question}
+Participant answer: ${
             answers[question.id] ?? ""
           }`
       )
@@ -253,48 +361,70 @@ export function buildClarifyFirstRiskRegisterPrompt(
 
   return `You are an expert AI ethics advisor.
 
-Generate a structured ethical risk register for the project below.
+Generate the FINAL structured ethical risk register for the MindAlert project.
 
-The analysis MUST use:
+You MUST use all three sources:
 
-1. The original project brief
-2. The three clarification questions
-3. The participant's answers
+SOURCE 1 — ORIGINAL PROJECT BRIEF
+The authoritative description of the project.
 
-PROJECT BRIEF:
-"""
-${brief}
-"""
+SOURCE 2 — FIXED CLARIFICATION QUESTIONS
+The same questions are used for every participant.
 
-CLARIFICATION QUESTIONS AND PARTICIPANT ANSWERS:
-"""
-${clarificationText}
-"""
+SOURCE 3 — PARTICIPANT ANSWERS
+These provide additional contextual information and proposed preferences or safeguards.
 
-Participant answers are additional contextual information.
+Participant answers may influence:
+- identified risks;
+- affected stakeholders;
+- severity;
+- likelihood;
+- mitigation recommendations.
 
-They must be allowed to affect:
-- identified risks
-- affected stakeholders
+IMPORTANT:
+- Do not invent project facts.
+- Do not treat participant proposals as safeguards that are already implemented.
+- Distinguish proposed safeguards from existing safeguards.
+- Preserve uncertainty where appropriate.
+- Do not invent stakeholders or data sources.
+- Include only relevant ethical risks.
+
+Allowed risk categories:
+"fairness"
+"privacy"
+"transparency"
+"security"
+"accountability"
+
+Allowed severity values:
+"low"
+"medium"
+"high"
+
+Allowed likelihood values:
+"low"
+"medium"
+"high"
+
+Every risk MUST contain exactly:
+- category
+- description
+- affectedStakeholders
 - severity
 - likelihood
-- mitigation recommendations
+- mitigations
 
-Do not ignore relevant information from the participant's answers.
-
-Return ONLY valid JSON.
-
-Use exactly this structure:
+Return exactly this JSON structure:
 
 {
-  "projectTitle": "short descriptive title",
+  "projectTitle": "MindAlert Ethical Risk Analysis",
   "risks": [
     {
-      "category": "fairness | privacy | transparency | security | accountability",
-      "description": "clear specific risk",
-      "affectedStakeholders": ["stakeholder"],
-      "severity": "low | medium | high",
-      "likelihood": "unlikely | possible | likely",
+      "category": "privacy",
+      "description": "specific ethical risk",
+      "affectedStakeholders": ["students"],
+      "severity": "high",
+      "likelihood": "high",
       "mitigations": [
         "specific actionable mitigation"
       ]
@@ -307,11 +437,35 @@ Use exactly this structure:
   ]
 }
 
-Do not speculate beyond the project brief and participant answers.
+STRICT OUTPUT RULES:
+- Return exactly ONE JSON object.
+- Start with {.
+- End with }.
+- Do NOT use Markdown.
+- Do NOT use code fences.
+- Do NOT add explanations.
+- Do NOT add extra JSON keys.
+- "risks" must be an array.
+- "affectedStakeholders" must be an array of strings.
+- "mitigations" must be an array of strings.
+- "prioritisedActions" must be an array of strings.
+- Use lowercase category/severity/likelihood values.
 
-JSON output:`
+ORIGINAL PROJECT BRIEF:
+${brief}
+
+FIXED CLARIFICATION QUESTIONS AND PARTICIPANT ANSWERS:
+${clarificationText}
+
+Now return ONLY the JSON object.`
 }
 
+
+/**
+ * =========================================================
+ * GENERAL SYSTEM PROMPT
+ * =========================================================
+ */
 
 export const SYSTEM_PROMPT = `
 You are a conversational AI ethics advisor specialising in
@@ -320,12 +474,16 @@ data science and AI projects.
 Your role is to help students identify, understand, structure,
 and mitigate ethical risks.
 
-Your analysis should be specific to the project context.
-
 Relevant ethical dimensions include:
-fairness, privacy, transparency,
-security, and accountability.
+- fairness
+- privacy
+- transparency
+- security
+- accountability
 
 When information is missing, acknowledge the uncertainty
 rather than inventing information.
+
+Do not fabricate project facts, stakeholders, data sources,
+safeguards, or outcomes.
 `

@@ -11,6 +11,7 @@ import {
   Slot,
   RiskRegister,
   isSlotMissing,
+  CLARIFY_FIRST_QUESTIONS,
 } from "../slots"
 
 import {
@@ -20,6 +21,19 @@ import {
   buildUnguidedRiskRegisterPrompt,
   buildClarifyFirstRiskRegisterPrompt,
 } from "../prompts"
+
+
+/**
+ * =========================================================
+ * HUGGING FACE CONFIGURATION
+ * =========================================================
+ *
+ * SAME MODEL / SETTINGS FOR ALL CONDITIONS
+ *
+ * 1. Hidden one-shot baseline
+ * 2. Unguided condition
+ * 3. Clarify-first condition
+ */
 
 const HF_TOKEN =
   process.env.HF_TOKEN
@@ -32,25 +46,44 @@ const HF_URL =
   "https://router.huggingface.co/v1/chat/completions"
 
 /**
- * Calls the Hugging Face OpenAI-compatible API.
- *
- * jsonMode = true is used whenever the expected
- * response is structured JSON.
+ * These settings are fixed across all study modes.
  */
+const TEMPERATURE = 0
+
+const MAX_TOKENS = 2000
+
+
+/**
+ * =========================================================
+ * HUGGING FACE API CALL
+ * =========================================================
+ */
+
 async function callHuggingFace(
   prompt: string,
   jsonMode = false
 ): Promise<string> {
+
   if (!HF_TOKEN) {
     throw new Error(
       "HF_TOKEN is missing. Please add HF_TOKEN to your environment variables."
     )
   }
 
-  const requestBody: Record<
-    string,
-    unknown
-  > = {
+  const finalPrompt =
+    jsonMode
+      ? `${prompt}
+
+FINAL OUTPUT REQUIREMENT:
+Return ONLY the JSON object.
+Do not use Markdown.
+Do not use code fences.
+Do not write reasoning.
+Do not write an explanation.
+Do not write anything before or after the JSON object.`
+      : prompt
+
+  const requestBody = {
     model: HF_MODEL,
 
     messages: [
@@ -59,50 +92,58 @@ async function callHuggingFace(
         content:
           "You are an expert responsible-AI ethics advisor. Follow the requested output format exactly. Do not invent information.",
       },
-
       {
         role: "user",
-        content: prompt,
+        content: finalPrompt,
       },
     ],
 
-    temperature: 0,
+    /**
+     * SAME SETTINGS FOR EVERY STUDY CONDITION.
+     */
+    temperature: TEMPERATURE,
 
-    max_tokens: 2000,
+    max_tokens: MAX_TOKENS,
   }
 
   /**
-   * Ask the model to return a JSON object
-   * for structured outputs.
+   * IMPORTANT:
+   *
+   * We intentionally do NOT use:
+   *
+   * response_format: { type: "json_object" }
+   *
+   * because the Hugging Face provider previously rejected
+   * the request with a 400 JSON-generation error.
    */
-  if (jsonMode) {
-    requestBody.response_format = {
-      type: "json_object",
-    }
-  }
 
   const response =
-    await fetch(HF_URL, {
-      method: "POST",
+    await fetch(
+      HF_URL,
+      {
+        method: "POST",
 
-      headers: {
-        "Content-Type":
-          "application/json",
+        headers: {
+          "Content-Type":
+            "application/json",
 
-        Authorization:
-          `Bearer ${HF_TOKEN}`,
-      },
+          Authorization:
+            `Bearer ${HF_TOKEN}`,
+        },
 
-      body:
-        JSON.stringify(
-          requestBody
-        ),
-    })
+        body:
+          JSON.stringify(
+            requestBody
+          ),
+      }
+    )
 
   if (!response.ok) {
+
     let errorMessage = ""
 
     try {
+
       const errorData =
         await response.json()
 
@@ -113,7 +154,9 @@ async function callHuggingFace(
         JSON.stringify(
           errorData
         )
+
     } catch {
+
       errorMessage =
         await response.text()
     }
@@ -141,9 +184,10 @@ async function callHuggingFace(
     typeof content !==
       "string"
   ) {
+
     console.error(
       "Unexpected Hugging Face response:",
-      data
+      JSON.stringify(data)
     )
 
     throw new Error(
@@ -151,61 +195,85 @@ async function callHuggingFace(
     )
   }
 
+  console.log(
+    "Hugging Face model:",
+    HF_MODEL
+  )
+
+  console.log(
+    "Hugging Face response length:",
+    content.length
+  )
+
   return content.trim()
 }
 
+
 /**
- * Removes Markdown JSON code fences.
+ * =========================================================
+ * JSON CLEANING
+ * =========================================================
  */
+
 function cleanJson(
   text: string
 ): string {
+
   let cleaned =
     text.trim()
 
-  if (
-    cleaned.startsWith(
-      "```json"
+  /**
+   * Remove <think>...</think> blocks if the model/provider
+   * returns reasoning in that format.
+   */
+  cleaned =
+    cleaned.replace(
+      /<think>[\s\S]*?<\/think>/gi,
+      ""
     )
-  ) {
-    cleaned =
-      cleaned.substring(7)
-  } else if (
-    cleaned.startsWith("```")
-  ) {
-    cleaned =
-      cleaned.substring(3)
-  }
 
-  if (
-    cleaned.endsWith("```")
-  ) {
-    cleaned =
-      cleaned.substring(
-        0,
-        cleaned.length - 3
-      )
-  }
+  cleaned =
+    cleaned.trim()
+
+  /**
+   * Remove Markdown code fences.
+   */
+  cleaned =
+    cleaned.replace(
+      /^```(?:json)?\s*/i,
+      ""
+    )
+
+  cleaned =
+    cleaned.replace(
+      /\s*```$/i,
+      ""
+    )
 
   return cleaned.trim()
 }
 
+
 /**
- * Extract the first complete JSON object.
- *
- * Handles nested objects and braces inside
- * quoted strings.
+ * =========================================================
+ * JSON OBJECT EXTRACTION
+ * =========================================================
  */
+
 function extractJsonObject(
   text: string
 ): string {
+
   const cleaned =
     cleanJson(text)
 
   const firstBrace =
     cleaned.indexOf("{")
 
-  if (firstBrace === -1) {
+  if (
+    firstBrace === -1
+  ) {
+
     throw new Error(
       "No JSON object found in the LLM response."
     )
@@ -222,11 +290,14 @@ function extractJsonObject(
     i < cleaned.length;
     i++
   ) {
+
     const character =
       cleaned[i]
 
     if (escaped) {
+
       escaped = false
+
       continue
     }
 
@@ -234,13 +305,16 @@ function extractJsonObject(
       character === "\\" &&
       inString
     ) {
+
       escaped = true
+
       continue
     }
 
     if (
       character === '"'
     ) {
+
       inString =
         !inString
 
@@ -254,15 +328,20 @@ function extractJsonObject(
     if (
       character === "{"
     ) {
+
       depth++
     }
 
     if (
       character === "}"
     ) {
+
       depth--
 
-      if (depth === 0) {
+      if (
+        depth === 0
+      ) {
+
         return cleaned.substring(
           firstBrace,
           i + 1
@@ -276,31 +355,78 @@ function extractJsonObject(
   )
 }
 
+
 /**
- * Generic JSON parser.
+ * =========================================================
+ * GENERIC JSON PARSER
+ * =========================================================
  */
+
 function parseJsonResponse<T>(
   rawResponse: string,
   errorMessage: string
 ): T {
+
   try {
+
+    const cleaned =
+      cleanJson(
+        rawResponse
+      )
+
+    /**
+     * First try the entire cleaned response.
+     *
+     * This handles the ideal case where the model returns
+     * pure JSON.
+     */
+    try {
+
+      return JSON.parse(
+        cleaned
+      ) as T
+
+    } catch {
+      /**
+       * If extra text exists, extract the first complete
+       * JSON object.
+       */
+    }
+
     const jsonText =
       extractJsonObject(
-        rawResponse
+        cleaned
       )
 
     return JSON.parse(
       jsonText
     ) as T
+
   } catch (error) {
+
     console.error(
-      errorMessage,
+      "========================================"
+    )
+
+    console.error(
+      errorMessage
+    )
+
+    console.error(
+      "Parser error:",
       error
     )
 
     console.error(
-      "Raw LLM response:",
+      "RAW LLM RESPONSE:"
+    )
+
+    console.error(
       rawResponse
+    )
+
+    console.error(
+      "========================================"
     )
 
     throw new Error(
@@ -308,6 +434,141 @@ function parseJsonResponse<T>(
     )
   }
 }
+
+
+/**
+ * =========================================================
+ * RISK REGISTER VALIDATION
+ * =========================================================
+ */
+
+function normaliseRiskRegister(
+  parsed: Partial<RiskRegister>,
+  mode: RiskRegister["mode"],
+  slots: Slot[] = []
+): RiskRegister {
+
+  const risks =
+    Array.isArray(
+      parsed.risks
+    )
+      ? parsed.risks
+          .filter(
+            (risk) =>
+              risk &&
+              typeof risk ===
+                "object"
+          )
+          .map(
+            (risk) => {
+
+              const candidate =
+                risk as Record<
+                  string,
+                  unknown
+                >
+
+              const category =
+                typeof candidate.category ===
+                  "string"
+                  ? candidate.category.toLowerCase()
+                  : "accountability"
+
+              const severity =
+                typeof candidate.severity ===
+                  "string"
+                  ? candidate.severity.toLowerCase()
+                  : "medium"
+
+              const likelihood =
+                typeof candidate.likelihood ===
+                  "string"
+                  ? candidate.likelihood.toLowerCase()
+                  : "medium"
+
+              const affectedStakeholders =
+                Array.isArray(
+                  candidate.affectedStakeholders
+                )
+                  ? candidate.affectedStakeholders
+                      .filter(
+                        (item) =>
+                          typeof item ===
+                          "string"
+                      )
+                  : []
+
+              const mitigations =
+                Array.isArray(
+                  candidate.mitigations
+                )
+                  ? candidate.mitigations
+                      .filter(
+                        (item) =>
+                          typeof item ===
+                          "string"
+                      )
+                  : []
+
+              return {
+                ...candidate,
+
+                category,
+
+                description:
+                  typeof candidate.description ===
+                    "string"
+                    ? candidate.description
+                    : "Ethical risk identified in the project.",
+
+                affectedStakeholders,
+
+                severity,
+
+                likelihood,
+
+                mitigations,
+              }
+            }
+          )
+      : []
+
+  const prioritisedActions =
+    Array.isArray(
+      parsed.prioritisedActions
+    )
+      ? parsed.prioritisedActions
+          .filter(
+            (item) =>
+              typeof item ===
+              "string"
+          )
+      : []
+
+  return {
+
+    projectTitle:
+      typeof parsed.projectTitle ===
+        "string"
+        ? parsed.projectTitle
+        : "MindAlert Ethical Risk Analysis",
+
+    generatedAt:
+      typeof parsed.generatedAt ===
+        "string"
+        ? parsed.generatedAt
+        : new Date().toISOString(),
+
+    mode,
+
+    slots,
+
+    risks,
+
+    prioritisedActions,
+  }
+}
+
 
 /**
  * =========================================================
@@ -318,6 +579,7 @@ function parseJsonResponse<T>(
 export async function extractSlots(
   input: ExtractSlotsInput
 ): Promise<ExtractSlotsOutput> {
+
   const prompt =
     buildSlotExtractionPrompt(
       input.brief
@@ -343,37 +605,43 @@ export async function extractSlots(
       Object.keys(
         SLOT_DEFINITIONS
       ) as SlotId[]
-    ).map((id) => {
-      const rawValue =
-        parsed[id]
+    ).map(
+      (id) => {
 
-      const value =
-        typeof rawValue ===
-          "string" &&
-        rawValue.trim() !== ""
-          ? rawValue.trim()
-          : "not specified"
+        const rawValue =
+          parsed[id]
 
-      return {
-        id,
+        const value =
+          typeof rawValue ===
+            "string" &&
+          rawValue.trim() !== ""
+            ? rawValue.trim()
+            : "not specified"
 
-        label:
-          SLOT_DEFINITIONS[id]
-            .label,
+        return {
 
-        value,
+          id,
 
-        missing:
-          isSlotMissing(
-            value
-          ),
+          label:
+            SLOT_DEFINITIONS[
+              id
+            ].label,
+
+          value,
+
+          missing:
+            isSlotMissing(
+              value
+            ),
+        }
       }
-    })
+    )
 
   return {
     slots,
   }
 }
+
 
 /**
  * =========================================================
@@ -384,63 +652,49 @@ export async function extractSlots(
 export async function generateRiskRegister(
   input: GenerateRiskRegisterInput
 ): Promise<GenerateRiskRegisterOutput> {
+
   let prompt: string
 
   /**
    * -------------------------------------------------------
-   * CONDITION A — ONE SHOT
+   * HIDDEN ONE-SHOT BASELINE
    * -------------------------------------------------------
-   *
-   * Fixed MindAlert brief
-   * +
-   * same LLM
-   * ->
-   * immediate risk register
-   *
-   * No participant clarification answers.
    */
 
   if (
     input.mode ===
     "one_shot"
   ) {
+
     prompt =
       buildOneShotBaselinePrompt(
         input.brief
       )
-  } else {
-    /**
-     * -----------------------------------------------------
-     * CONDITION B — CLARIFY FIRST
-     * -----------------------------------------------------
-     *
-     * Fixed MindAlert brief
-     * +
-     * participant answers to the same 3 questions
-     * ->
-     * final risk register
-     */
+  }
+
+  /**
+   * -------------------------------------------------------
+   * CLARIFY-FIRST
+   * -------------------------------------------------------
+   */
+
+  else if (
+    input.mode ===
+    "clarify_first"
+  ) {
 
     const answers =
       input.clarificationAnswers ??
       {}
 
-    /**
-     * The IDs correspond to:
-     *
-     * provenance
-     * automation
-     * consequences
-     *
-     * The actual fixed question text is already
-     * controlled by the frontend/backend.
-     */
     const questions =
-      Object.keys(answers).map(
-        (id) => ({
-          id,
+      CLARIFY_FIRST_QUESTIONS.map(
+        (item) => ({
+          id:
+            item.slotId,
 
-          question: id,
+          question:
+            item.question,
         })
       )
 
@@ -452,6 +706,13 @@ export async function generateRiskRegister(
 
         answers
       )
+  }
+
+  else {
+
+    throw new Error(
+      `Unsupported risk register mode: ${input.mode}`
+    )
   }
 
   const rawResponse =
@@ -469,45 +730,18 @@ export async function generateRiskRegister(
       "The LLM returned invalid JSON while generating the ethical risk register."
     )
 
-  const register:
-    RiskRegister = {
-    projectTitle:
-      typeof parsed.projectTitle ===
-      "string"
-        ? parsed.projectTitle
-        : "MindAlert Ethical Risk Analysis",
-
-    generatedAt:
-      typeof parsed.generatedAt ===
-      "string"
-        ? parsed.generatedAt
-        : new Date().toISOString(),
-
-    mode:
+  const register =
+    normaliseRiskRegister(
+      parsed,
       input.mode,
-
-    slots:
-      input.slots,
-
-    risks:
-      Array.isArray(
-        parsed.risks
-      )
-        ? parsed.risks
-        : [],
-
-    prioritisedActions:
-      Array.isArray(
-        parsed.prioritisedActions
-      )
-        ? parsed.prioritisedActions
-        : [],
-  }
+      input.slots ?? []
+    )
 
   return {
     register,
   }
 }
+
 
 /**
  * =========================================================
@@ -517,15 +751,14 @@ export async function generateRiskRegister(
 
 export async function generateChatResponse(
   brief: string,
-
   conversation: Array<{
     role:
       | "user"
       | "assistant"
-
     content: string
   }>
 ): Promise<string> {
+
   const prompt =
     buildUnguidedChatPrompt(
       brief,
@@ -538,6 +771,7 @@ export async function generateChatResponse(
   )
 }
 
+
 /**
  * =========================================================
  * UNGUIDED FINAL RISK REGISTER
@@ -546,15 +780,14 @@ export async function generateChatResponse(
 
 export async function generateUnguidedRiskRegister(
   brief: string,
-
   conversation: Array<{
     role:
       | "user"
       | "assistant"
-
     content: string
   }>
 ): Promise<RiskRegister> {
+
   const prompt =
     buildUnguidedRiskRegisterPrompt(
       brief,
@@ -576,35 +809,9 @@ export async function generateUnguidedRiskRegister(
       "The LLM returned invalid JSON while generating the unguided risk register."
     )
 
-  return {
-    projectTitle:
-      typeof parsed.projectTitle ===
-      "string"
-        ? parsed.projectTitle
-        : "MindAlert Ethical Risk Analysis",
-
-    generatedAt:
-      typeof parsed.generatedAt ===
-      "string"
-        ? parsed.generatedAt
-        : new Date().toISOString(),
-
-    mode: "unguided",
-
-    slots: [],
-
-    risks:
-      Array.isArray(
-        parsed.risks
-      )
-        ? parsed.risks
-        : [],
-
-    prioritisedActions:
-      Array.isArray(
-        parsed.prioritisedActions
-      )
-        ? parsed.prioritisedActions
-        : [],
-  }
+  return normaliseRiskRegister(
+    parsed,
+    "unguided",
+    []
+  )
 }

@@ -12,6 +12,9 @@ import {
 const LLM_BACKEND =
   process.env.LLM_BACKEND ?? "mock"
 
+/**
+ * Normalize slot extraction responses.
+ */
 const normalizeSlots = (
   result: any
 ): ExtractSlotsOutput => {
@@ -28,8 +31,16 @@ const normalizeSlots = (
   )
 }
 
+/**
+ * Normalize risk-register responses.
+ *
+ * IMPORTANT:
+ * We preserve the requested experimental mode.
+ * We do NOT silently convert failed results to one_shot.
+ */
 const normalizeRegister = (
-  result: any
+  result: any,
+  requestedMode: GenerateRiskRegisterInput["mode"]
 ): GenerateRiskRegisterOutput => {
   if (
     typeof result === "string" ||
@@ -40,7 +51,7 @@ const normalizeRegister = (
         projectTitle: "",
         generatedAt:
           new Date().toISOString(),
-        mode: "one_shot",
+        mode: requestedMode,
         slots: [],
         risks: [],
         prioritisedActions: [],
@@ -48,10 +59,24 @@ const normalizeRegister = (
     }
   }
 
-  return result
+  return {
+    ...result,
+    register: {
+      ...result.register,
+      mode:
+        result.register?.mode ??
+        requestedMode,
+    },
+  }
 }
 
 export const llmService: LLMService = {
+  /**
+   * Extract missing contextual slots from the fixed
+   * MindAlert project brief.
+   *
+   * Used by the clarification workflow.
+   */
   async extractSlots(
     input: ExtractSlotsInput
   ): Promise<ExtractSlotsOutput> {
@@ -80,11 +105,20 @@ export const llmService: LLMService = {
     )
   },
 
+  /**
+   * Generate a structured ethical risk register.
+   *
+   * The same deployed LLM backend is used for:
+   *
+   * - hidden one-shot baseline
+   * - Condition A: Unguided
+   * - Condition B: Clarify-first
+   */
   async generateRiskRegister(
     input: GenerateRiskRegisterInput
   ): Promise<GenerateRiskRegisterOutput> {
     console.log(
-      `[LLM] generateRiskRegister backend=${LLM_BACKEND}`
+      `[LLM] generateRiskRegister backend=${LLM_BACKEND} mode=${input.mode}`
     )
 
     if (
@@ -101,7 +135,8 @@ export const llmService: LLMService = {
       return normalizeRegister(
         await mockLLM.generateRiskRegister(
           input
-        )
+        ),
+        input.mode
       )
     }
 
