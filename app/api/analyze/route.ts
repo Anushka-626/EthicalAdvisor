@@ -1,28 +1,18 @@
-import { NextResponse } from "next/server"
-
-import { supabase } from "@/lib/supabaseClient"
+import { NextRequest, NextResponse } from "next/server"
 
 import { llmService } from "@/lib/llm/llmService"
+import type { ConversationMessage } from "@/lib/llm/llmInterface"
 
 import {
   CLARIFY_FIRST_QUESTIONS,
-  Slot,
+  type Slot,
 } from "@/lib/slots"
 
-import {
-  generateChatResponse,
-  generateUnguidedRiskRegister,
-} from "@/lib/llm/huggingFaceLLM"
+import { supabase as database } from "@/lib/supabaseClient"
 
-import { MINDALEERT_BRIEF } from "@/lib/studyConfig"
-
-/**
- * ---------------------------------------------------------
- * STUDY / PROMPT VERSIONS
- * ---------------------------------------------------------
- */
-
-const PROMPT_VERSION = "v2.0"
+/* -------------------------------------------------------------------------- */
+/* Configuration                                                              */
+/* -------------------------------------------------------------------------- */
 
 const UNGUIDED_PROMPT_VERSION =
   "unguided-v1.0"
@@ -33,900 +23,1292 @@ const CLARIFY_PROMPT_VERSION =
 const ONE_SHOT_PROMPT_VERSION =
   "one-shot-baseline-v1.0"
 
-/**
- * Standardized brief version.
- *
- * Keep this fixed throughout the study.
- */
-
-const BRIEF_VERSION =
-  process.env.BRIEF_VERSION ??
-  "mindalert-v1.0"
-
-/**
- * Same model must be used for every condition.
- */
-
-const MODEL =
-  process.env.HF_MODEL ??
-  "openai/gpt-oss-20b"
-
-/**
- * Fixed LLM settings.
- */
-
 const TEMPERATURE = 0
-
 const MAX_TOKENS = 2000
 
+/* -------------------------------------------------------------------------- */
+/* MindAlert project brief                                                    */
+/* -------------------------------------------------------------------------- */
+
+import {
+  MINDALEERT_BRIEF,
+} from "@/lib/studyConfig"
+/* -------------------------------------------------------------------------- */
+/* Helper functions                                                           */
+/* -------------------------------------------------------------------------- */
+
+function getModelName(): string {
+  return (
+    process.env.HF_MODEL ||
+    process.env.LLM_MODEL ||
+    "openai/gpt-oss-20b"
+  )
+}
 
 /**
- * ---------------------------------------------------------
- * API ROUTE
- * ---------------------------------------------------------
+ * Return a generic error to the browser while keeping the
+ * detailed error in the server logs.
  */
+function publicError(
+  message: string,
+  status = 500
+) {
+  return NextResponse.json(
+    {
+      error: message,
+    },
+    {
+      status,
+    }
+  )
+}
+
+/**
+ * Supabase may be typed as nullable depending on the
+ * project's lib/supabaseClient implementation.
+ */
+function requireDatabase() {
+  if (!database) {
+    throw new Error(
+      "Supabase client is not configured. Check SUPABASE_URL and SUPABASE_KEY."
+    )
+  }
+
+  return database
+}
+
+/**
+ * Convert condition order into a JSON-compatible value.
+ *
+ * study_responses.condition_order is JSONB.
+ */
+function getConditionOrderValue(
+  conditionOrder: unknown
+) {
+  if (conditionOrder == null) {
+    return null
+  }
+
+  if (typeof conditionOrder === "string") {
+    return {
+      order: conditionOrder,
+    }
+  }
+
+  return conditionOrder
+}
+
+/**
+ * Safely extract a conversation containing only
+ * valid user/assistant messages.
+ */
+function getConversation(
+  messages: unknown,
+  conversation: unknown
+): ConversationMessage[] {
+  const source =
+    Array.isArray(messages)
+      ? messages
+      : Array.isArray(conversation)
+        ? conversation
+        : []
+
+  return source.filter(
+    (
+      message
+    ): message is ConversationMessage => {
+      if (
+        typeof message !== "object" ||
+        message === null
+      ) {
+        return false
+      }
+
+      const item =
+        message as Record<string, unknown>
+
+      return (
+        (item.role === "user" ||
+          item.role === "assistant") &&
+        typeof item.content === "string"
+      )
+    }
+  )
+}
+
+/**
+ * Normalize clarification answers received from the frontend.
+ *
+ * The frontend sends an object such as:
+ *
+ * {
+ *   questionKey1: "answer",
+ *   questionKey2: "answer",
+ *   questionKey3: "answer"
+ * }
+ *
+ * We intentionally do NOT access question.id or question.slotId
+ * here because ClarificationQuestion does not expose those
+ * properties.
+ */
+function normalizeClarificationAnswers(
+  answers: unknown
+): Record<string, string> {
+  if (
+    typeof answers !== "object" ||
+    answers === null ||
+    Array.isArray(answers)
+  ) {
+    return {}
+  }
+
+  const input =
+    answers as Record<string, unknown>
+
+  const normalized: Record<string, string> = {}
+
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof value === "string") {
+      normalized[key] = value.trim()
+    }
+  }
+
+  return normalized
+}
+
+/**
+ * Validate the participant's clarification answers.
+ *
+ * We require exactly three non-empty answers.
+ *
+ * We deliberately do not reference:
+ *   question.id
+ *   question.slotId
+ *
+ * because those properties are not part of ClarificationQuestion.
+ */
+function validateClarificationAnswers(
+  answers: Record<string, string>
+): void {
+  const values = Object.values(answers)
+
+  if (values.length !== 3) {
+    throw new Error(
+      "Please answer all three clarification questions."
+    )
+  }
+
+  const hasEmptyAnswer =
+    values.some(
+      (answer) =>
+        !answer ||
+        answer.trim().length === 0
+    )
+
+  if (hasEmptyAnswer) {
+    throw new Error(
+      "Please answer all three clarification questions."
+    )
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* POST                                                                       */
+/* -------------------------------------------------------------------------- */
 
 export async function POST(
-  request: Request
+  request: NextRequest
 ) {
   try {
-    const body =
-      await request.json()
+    const body = await request.json()
 
     const {
       action,
-      brief,
-      mode,
       session_id,
       task_type,
       condition_order,
-      messages,
+      brief,
+      mode,
+      slots,
       clarificationAnswers,
+      clarification_answers,
+      messages,
+      conversation,
+      turn_count,
+      interaction_duration_ms,
+      duration_ms,
+      answers,
     } = body
 
-
-    /**
-     * -----------------------------------------------------
-     * VALIDATION
-     * -----------------------------------------------------
-     */
-
-    if (
-      !brief ||
-      typeof brief !== "string"
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "A project brief is required.",
-        },
-        {
-          status: 400,
-        }
-      )
-    }
-
-    /**
-     * IMPORTANT:
-     *
-     * The participant-facing study must always use
-     * the standardized MindAlert brief.
-     *
-     * This prevents the client from changing the
-     * experimental input.
-     */
-
-    if (
-      brief.trim() !==
-      MINDALEERT_BRIEF.trim()
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "The standardized MindAlert project brief must be used.",
-        },
-        {
-          status: 400,
-        }
-      )
-    }
-
-    if (!supabase) {
-      return NextResponse.json(
-        {
-          error:
-            "Supabase is not configured.",
-        },
-        {
-          status: 500,
-        }
-      )
-    }
-
-
-    /**
-     * -----------------------------------------------------
-     * 1. UNGUIDED CHAT
-     * -----------------------------------------------------
-     *
-     * Student freely interacts with the same LLM.
-     *
-     * No predefined clarification questions.
-     *
-     * IMPORTANT:
-     * Both the student's prompt and the AI response
-     * are stored.
-     */
+    /* ====================================================================== */
+    /* CHAT                                                                   */
+    /* ====================================================================== */
 
     if (action === "chat") {
-
-      const conversation =
-        Array.isArray(messages)
-          ? messages
-          : []
-
-      if (
-        conversation.length === 0
-      ) {
-        return NextResponse.json(
-          {
-            error:
-              "The conversation is empty.",
-          },
-          {
-            status: 400,
-          }
-        )
-      }
-
-      /**
-       * Find the latest student message.
-       *
-       * The frontend sends the complete conversation
-       * on every request.
-       *
-       * We only save the newest user message here
-       * so previous messages are not duplicated.
+      /*
+       * Always fall back to the fixed MindAlert brief.
        */
+      const projectBrief =
+        typeof brief === "string" &&
+        brief.trim()
+          ? brief
+          : MINDALEERT_BRIEF
 
-      const latestUserMessage =
-        [...conversation]
-          .reverse()
-          .find(
-            (message: any) =>
-              message?.role === "user"
-          )
-
-      if (
-        !latestUserMessage ||
-        typeof latestUserMessage.content !==
-          "string"
-      ) {
-        return NextResponse.json(
-          {
-            error:
-              "A valid student message is required.",
-          },
-          {
-            status: 400,
-          }
-        )
-      }
-
-      const startTime =
-        Date.now()
-
-      const response =
-        await generateChatResponse(
-          MINDALEERT_BRIEF,
+      const chatConversation =
+        getConversation(
+          messages,
           conversation
         )
 
-      const latency =
-        Date.now() - startTime
-
-
-      /**
-       * Save BOTH:
-       *
-       * 1. student prompt
-       * 2. assistant response
-       */
-
-      if (session_id) {
-
-        const {
-          error,
-        } = await supabase
-          .from(
-            "ethics_interactions"
+      try {
+        const response =
+          await llmService.generateChatResponse(
+            projectBrief,
+            chatConversation
           )
-          .insert([
-            {
-              session_id,
 
-              task_type:
-                task_type ??
-                "unguided",
+        return NextResponse.json({
+          success: true,
+          response,
+        })
+      } catch (error) {
+        console.error(
+          "Chat generation failed:",
+          error
+        )
 
-              role:
-                "user",
+        return publicError(
+          "Failed to generate the AI response.",
+          500
+        )
+      }
+    }
 
-              content:
-                latestUserMessage.content,
+    /* ====================================================================== */
+    /* EXTRACT SLOTS                                                          */
+    /* ====================================================================== */
 
-              latency_ms:
-                null,
+    if (action === "extract_slots") {
+      const projectBrief =
+        typeof brief === "string" &&
+        brief.trim()
+          ? brief
+          : MINDALEERT_BRIEF
 
-              created_at:
-                new Date().toISOString(),
-            },
+      try {
+        const result =
+          await llmService.extractSlots({
+            brief: projectBrief,
+          })
 
-            {
-              session_id,
+        return NextResponse.json({
+          success: true,
+          slots: result.slots,
+          clarificationQuestions:
+            CLARIFY_FIRST_QUESTIONS,
+        })
+      } catch (error) {
+        console.error(
+          "Slot extraction failed:",
+          error
+        )
 
-              task_type:
-                task_type ??
-                "unguided",
+        return publicError(
+          "Failed to analyse the project brief.",
+          500
+        )
+      }
+    }
 
-              role:
-                "assistant",
+    /* ====================================================================== */
+    /* GENERATE CLARIFY-FIRST / ONE-SHOT                                     */
+    /* ====================================================================== */
 
-              content:
-                response,
+    if (action === "generate") {
+      if (!session_id) {
+        return publicError(
+          "Missing session_id.",
+          400
+        )
+      }
 
-              latency_ms:
-                latency,
+      /*
+       * IMPORTANT:
+       *
+       * The study must always use the fixed MindAlert brief.
+       *
+       * We therefore use MINDALEERT_BRIEF as the authoritative
+       * server-side project brief.
+       */
+      const projectBrief =
+        MINDALEERT_BRIEF
 
-              created_at:
-                new Date().toISOString(),
-            },
-          ])
+      /* -------------------------------------------------------------------- */
+      /* Strict mode validation                                               */
+      /* -------------------------------------------------------------------- */
 
-        if (error) {
+      if (
+        mode !== "one_shot" &&
+        mode !== "clarify_first"
+      ) {
+        console.error(
+          "Invalid generate mode:",
+          mode
+        )
+
+        return publicError(
+          "Invalid analysis mode.",
+          400
+        )
+      }
+
+      const requestedMode =
+        mode as
+          | "one_shot"
+          | "clarify_first"
+
+      /* -------------------------------------------------------------------- */
+      /* Resolve slots                                                        */
+      /* -------------------------------------------------------------------- */
+
+      let resolvedSlots: Slot[] = []
+
+      if (Array.isArray(slots)) {
+        resolvedSlots =
+          slots as Slot[]
+      } else if (
+        requestedMode ===
+        "clarify_first"
+      ) {
+        try {
+          const extracted =
+            await llmService.extractSlots({
+              brief: projectBrief,
+            })
+
+          resolvedSlots =
+            extracted.slots
+        } catch (error) {
           console.error(
-            "Failed to save unguided interaction:",
+            "Automatic slot extraction failed:",
             error
           )
 
-          /**
-           * We don't stop the experiment because
-           * the LLM response itself succeeded.
-           *
-           * The error remains visible in the
-           * server logs for debugging.
-           */
+          return publicError(
+            "Failed to analyse the project brief.",
+            500
+          )
         }
       }
 
-      return NextResponse.json({
-        response,
+      /* -------------------------------------------------------------------- */
+      /* Resolve clarification answers                                        */
+      /* -------------------------------------------------------------------- */
 
-        latency_ms:
-          latency,
+      const rawAnswers =
+        clarificationAnswers ??
+        clarification_answers ??
+        {}
+
+      const resolvedAnswers =
+        normalizeClarificationAnswers(
+          rawAnswers
+        )
+
+      /*
+       * Only clarify-first requires the three participant answers.
+       *
+       * One-shot does not use participant answers.
+       */
+      if (
+        requestedMode ===
+        "clarify_first"
+      ) {
+        try {
+          validateClarificationAnswers(
+            resolvedAnswers
+          )
+        } catch (error) {
+          console.error(
+            "Invalid clarification answers:",
+            error
+          )
+
+          return publicError(
+            error instanceof Error
+              ? error.message
+              : "Please answer all three clarification questions.",
+            400
+          )
+        }
+      }
+
+      /* -------------------------------------------------------------------- */
+      /* Generate risk register                                               */
+      /* -------------------------------------------------------------------- */
+
+      const startTime = Date.now()
+
+      let riskRegister
+
+      try {
+        const result =
+          await llmService.generateRiskRegister(
+            {
+              brief: projectBrief,
+
+              mode: requestedMode,
+
+              slots: resolvedSlots,
+
+              clarificationAnswers:
+                requestedMode ===
+                "clarify_first"
+                  ? resolvedAnswers
+                  : undefined,
+
+              /*
+               * One-shot and clarify-first do not use
+               * the unguided conversation.
+               */
+              conversation: [],
+            }
+          )
+
+        riskRegister =
+          result.register
+           } catch (error) {
+        console.error(
+          "================================================"
+        )
+
+        console.error(
+          "RISK REGISTER GENERATION FAILED"
+        )
+
+        console.error(
+          "Error:",
+          error
+        )
+
+        console.error(
+          "Generation context:",
+          {
+            mode: requestedMode,
+            model: getModelName(),
+            session_id,
+            answerKeys:
+              Object.keys(resolvedAnswers),
+          }
+        )
+
+        console.error(
+          "================================================"
+        )
+
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : String(error)
+
+        return publicError(
+          `LLM generation failed: ${errorMessage}`,
+          500
+        )
+      }
+
+      const latencyMs =
+        Date.now() - startTime
+
+      /* -------------------------------------------------------------------- */
+      /* Save participant submission                                          */
+      /* -------------------------------------------------------------------- */
+
+      let db
+
+      try {
+        db = requireDatabase()
+      } catch (error) {
+        console.error(
+          "Database configuration error:",
+          error
+        )
+
+        return publicError(
+          "The study database is temporarily unavailable.",
+          500
+        )
+      }
+
+      try {
+        const {
+          error: saveError,
+        } =
+          await db
+            .from("ethics_submissions")
+            .insert({
+              id: crypto.randomUUID(),
+
+              session_id,
+
+              task_type:
+                task_type ??
+                (
+                  requestedMode ===
+                  "clarify_first"
+                    ? "taskB"
+                    : "taskA"
+                ),
+
+              input_text:
+                projectBrief,
+
+              ai_output:
+                JSON.stringify(
+                  riskRegister
+                ),
+
+              condition_type:
+                requestedMode ===
+                "clarify_first"
+                  ? "clarify_first"
+                  : "one_shot",
+
+              model_name:
+                getModelName(),
+
+              prompt_version:
+                requestedMode ===
+                "clarify_first"
+                  ? CLARIFY_PROMPT_VERSION
+                  : ONE_SHOT_PROMPT_VERSION,
+
+              missing_slots:
+                resolvedSlots
+                  .filter(
+                    (slot) =>
+                      slot.missing
+                  )
+                  .map(
+                    (slot) =>
+                      slot.id
+                  ),
+
+              clarification_questions:
+                requestedMode ===
+                "clarify_first"
+                  ? CLARIFY_FIRST_QUESTIONS
+                  : [],
+
+              clarification_answers:
+                requestedMode ===
+                "clarify_first"
+                  ? resolvedAnswers
+                  : {},
+
+              latency_ms:
+                latencyMs,
+
+              mode:
+                requestedMode,
+
+              slots:
+                resolvedSlots,
+
+              condition_order:
+                condition_order ??
+                null,
+
+              conversation: [],
+
+              turn_count: 0,
+
+              interaction_duration_ms:
+                typeof duration_ms ===
+                "number"
+                  ? duration_ms
+                  : null,
+
+              model:
+                getModelName(),
+
+              temperature:
+                TEMPERATURE,
+
+              max_tokens:
+                MAX_TOKENS,
+            })
+
+        if (saveError) {
+          console.error(
+            "Failed to save ethics submission:",
+            saveError
+          )
+
+          return publicError(
+            "Risk register was generated, but saving the submission failed.",
+            500
+          )
+        }
+      } catch (error) {
+        console.error(
+          "Database insert exception:",
+          error
+        )
+
+        return publicError(
+          "Risk register was generated, but saving the submission failed.",
+          500
+        )
+      }
+
+      /* -------------------------------------------------------------------- */
+      /* Return register to frontend                                           */
+      /* -------------------------------------------------------------------- */
+
+      return NextResponse.json({
+        success: true,
+
+        /*
+         * Both names are returned for compatibility
+         * with different frontend components.
+         */
+        register: riskRegister,
+        riskRegister,
+
+        slots:
+          resolvedSlots,
+
+        latencyMs,
       })
     }
 
-
-    /**
-     * -----------------------------------------------------
-     * 2. UNGUIDED FINAL RISK REGISTER
-     * -----------------------------------------------------
-     *
-     * Input:
-     *
-     * standardized brief
-     * +
-     * complete conversation
-     *
-     * Output:
-     *
-     * structured risk register
-     *
-     * The participant does NOT see the register.
-     */
+    /* ====================================================================== */
+    /* GENERATE UNGUIDED                                                      */
+    /* ====================================================================== */
 
     if (
       action ===
       "generate_unguided"
     ) {
-
-      const conversation =
-        Array.isArray(messages)
-          ? messages
-          : []
-
-      if (
-        conversation.length === 0
-      ) {
-        return NextResponse.json(
-          {
-            error:
-              "The unguided conversation is empty.",
-          },
-          {
-            status: 400,
-          }
+      if (!session_id) {
+        return publicError(
+          "Missing session_id.",
+          400
         )
       }
 
-      const startTime =
-        Date.now()
+      /*
+       * The fixed MindAlert brief is always used.
+       */
+      const projectBrief =
+        MINDALEERT_BRIEF
 
-      const register =
-        await generateUnguidedRiskRegister(
-          MINDALEERT_BRIEF,
+      const unguidedConversation =
+        getConversation(
+          messages,
           conversation
         )
 
-      const latency =
-        Date.now() - startTime
+      const startTime = Date.now()
 
+      let riskRegister
 
-      /**
-       * Save final unguided result.
-       */
-
-      if (session_id) {
-
-        const {
-          error,
-        } = await supabase
-          .from(
-            "ethics_submissions"
-          )
-          .insert({
-            session_id,
-
-            task_type:
-              task_type ??
-              "unguided",
-
-            input_text:
-              MINDALEERT_BRIEF,
-
-            mode:
-              "unguided",
-
-            condition_order:
-              condition_order ??
-              null,
-
-            slots: [],
-
-            missing_slots: [],
-
-            clarification_questions: [],
-
-            clarification_answers: {},
-
-            prompt_version:
-              UNGUIDED_PROMPT_VERSION,
-
-            latency_ms:
-              latency,
-
-            ai_output:
-              register,
-
-            created_at:
-              new Date().toISOString(),
-          })
-
-        if (error) {
-
-          console.error(
-            "Failed to save unguided submission:",
-            error
-          )
-
-          return NextResponse.json(
+      try {
+        /*
+         * IMPORTANT:
+         *
+         * Unguided mode uses the exact same final
+         * risk-register generator as clarify-first
+         * and one-shot.
+         *
+         * Only the contextual information differs.
+         */
+        const result =
+          await llmService.generateRiskRegister(
             {
-              error:
-                "Risk register generated, but saving the result failed.",
-            },
-            {
-              status: 500,
+              brief: projectBrief,
+
+              mode: "unguided",
+
+              slots: [],
+
+              clarificationAnswers:
+                undefined,
+
+              conversation:
+                unguidedConversation,
             }
           )
-        }
-      }
 
-      /**
-       * IMPORTANT:
-       *
-       * Do NOT return the risk register.
-       *
-       * The participant must not see it.
-       */
-
-      return NextResponse.json({
-        success: true,
-
-        latency_ms:
-          latency,
-      })
-    }
-
-
-    /**
-     * -----------------------------------------------------
-     * 3. EXTRACT SLOTS
-     * -----------------------------------------------------
-     *
-     * Used internally by clarify-first.
-     *
-     * The questions themselves remain fixed.
-     */
-
-    if (
-      action ===
-      "extract_slots"
-    ) {
-
-      const {
-        slots,
-      } =
-        await llmService.extractSlots({
-          brief:
-            MINDALEERT_BRIEF,
-        })
-
-      return NextResponse.json({
-        slots,
-
-        clarificationQuestions:
-          CLARIFY_FIRST_QUESTIONS,
-      })
-    }
-
-
-    /**
-     * -----------------------------------------------------
-     * 4. CLARIFY-FIRST RISK REGISTER
-     * -----------------------------------------------------
-     *
-     * Participant-facing generation.
-     *
-     * ONLY clarify_first is allowed here.
-     *
-     * One-shot is NOT an experimental condition.
-     */
-
-    if (
-      action === "generate"
-    ) {
-
-      /**
-       * IMPORTANT:
-       *
-       * The participant-facing generate endpoint
-       * is ONLY for Condition B.
-       *
-       * The hidden one-shot baseline has its own
-       * generate_baseline action.
-       */
-
-      if (
-        mode !==
-        "clarify_first"
-      ) {
-        return NextResponse.json(
-          {
-            error:
-              "The generate action is only available for the clarify-first condition.",
-          },
-          {
-            status: 400,
-          }
-        )
-      }
-
-
-      /**
-       * Extract contextual slots from the
-       * standardized brief.
-       */
-
-      const {
-        slots,
-      } =
-        await llmService.extractSlots({
-          brief:
-            MINDALEERT_BRIEF,
-        })
-
-
-      /**
-       * Fixed questions.
-       *
-       * Exactly the same for every participant.
-       */
-
-      const fixedQuestions =
-        CLARIFY_FIRST_QUESTIONS
-
-
-      /**
-       * Participant answers.
-       */
-
-      const answers =
-        clarificationAnswers &&
-        typeof clarificationAnswers ===
-          "object"
-          ? clarificationAnswers
-          : {}
-
-
-      /**
-       * Ensure all three answers exist.
-       */
-
-      const allQuestionsAnswered =
-        fixedQuestions.every(
-          (question) =>
-            typeof answers[
-              question.slotId
-            ] === "string" &&
-            answers[
-              question.slotId
-            ].trim().length > 0
+        riskRegister =
+          result.register
+      } catch (error) {
+        console.error(
+          "Unguided generation failed:",
+          error
         )
 
-      if (
-        !allQuestionsAnswered
-      ) {
-        return NextResponse.json(
+        console.error(
+          "Unguided generation context:",
           {
-            error:
-              "All three clarification questions must be answered.",
-          },
-          {
-            status: 400,
-          }
-        )
-      }
-
-
-      const startTime =
-        Date.now()
-
-
-      /**
-       * Generate ONLY clarify-first result.
-       */
-
-      const {
-        register,
-      } =
-        await llmService.generateRiskRegister(
-          {
-            brief:
-              MINDALEERT_BRIEF,
-
-            mode:
-              "clarify_first",
-
-            slots:
-              slots,
-
-            clarificationAnswers:
-              answers,
+            model: getModelName(),
+            session_id,
+            conversationLength:
+              unguidedConversation.length,
           }
         )
 
-      const latency =
+        return publicError(
+          "Failed to generate the unguided risk register.",
+          500
+        )
+      }
+
+      const latencyMs =
         Date.now() - startTime
 
+      const userTurnCount =
+        typeof turn_count ===
+        "number"
+          ? turn_count
+          : unguidedConversation.filter(
+              (message) =>
+                message.role ===
+                "user"
+            ).length
 
-      /**
-       * Save participant result.
-       */
+      const interactionDuration =
+        typeof interaction_duration_ms ===
+        "number"
+          ? interaction_duration_ms
+          : null
 
-      if (session_id) {
+      let db
 
+      try {
+        db = requireDatabase()
+      } catch (error) {
+        console.error(
+          "Database configuration error:",
+          error
+        )
+
+        return publicError(
+          "The study database is temporarily unavailable.",
+          500
+        )
+      }
+
+      try {
         const {
-          error,
-        } = await supabase
-          .from(
-            "ethics_submissions"
-          )
-          .insert({
-            session_id,
+          error: saveError,
+        } =
+          await db
+            .from("ethics_submissions")
+            .insert({
+              id: crypto.randomUUID(),
 
-            task_type:
-              task_type ??
-              "B",
+              session_id,
 
-            input_text:
-              MINDALEERT_BRIEF,
+              task_type:
+                task_type ??
+                "taskA",
 
-            mode:
-              "clarify_first",
+              input_text:
+                projectBrief,
 
-            condition_order:
-              condition_order ??
-              null,
-
-            slots:
-              slots,
-
-            missing_slots:
-              slots
-                .filter(
-                  (
-                    slot: Slot
-                  ) =>
-                    slot.missing
-                )
-                .map(
-                  (
-                    slot: Slot
-                  ) =>
-                    slot.id
+              ai_output:
+                JSON.stringify(
+                  riskRegister
                 ),
 
-            clarification_questions:
-              fixedQuestions,
+              condition_type:
+                "unguided",
 
-            clarification_answers:
-              answers,
+              model_name:
+                getModelName(),
 
-            prompt_version:
-              CLARIFY_PROMPT_VERSION,
+              prompt_version:
+                UNGUIDED_PROMPT_VERSION,
 
-            latency_ms:
-              latency,
+              missing_slots: [],
 
-            ai_output:
-              register,
+              clarification_questions:
+                [],
 
-            created_at:
-              new Date().toISOString(),
-          })
+              clarification_answers:
+                {},
 
-        if (error) {
+              latency_ms:
+                latencyMs,
 
+              mode:
+                "unguided",
+
+              slots: [],
+
+              condition_order:
+                condition_order ??
+                null,
+
+              conversation:
+                unguidedConversation,
+
+              turn_count:
+                userTurnCount,
+
+              interaction_duration_ms:
+                interactionDuration,
+
+              model:
+                getModelName(),
+
+              temperature:
+                TEMPERATURE,
+
+              max_tokens:
+                MAX_TOKENS,
+            })
+
+        if (saveError) {
           console.error(
-            "Failed to save clarify-first submission:",
-            error
+            "Failed to save unguided submission:",
+            saveError
           )
 
-          return NextResponse.json(
-            {
-              error:
-                "Risk register generated, but saving the result failed.",
-            },
-            {
-              status: 500,
-            }
+          return publicError(
+            "Risk register was generated, but saving the submission failed.",
+            500
           )
         }
+      } catch (error) {
+        console.error(
+          "Unguided database insert exception:",
+          error
+        )
+
+        return publicError(
+          "Risk register was generated, but saving the submission failed.",
+          500
+        )
       }
-
-
-      /**
-       * IMPORTANT:
-       *
-       * The final risk register is NOT returned.
-       *
-       * The participant goes directly to the survey.
-       */
 
       return NextResponse.json({
         success: true,
 
-        latency_ms:
-          latency,
+        register:
+          riskRegister,
+
+        riskRegister,
+
+        latencyMs,
       })
     }
 
-
-    /**
-     * -----------------------------------------------------
-     * 5. HIDDEN ONE-SHOT BASELINE
-     * -----------------------------------------------------
-     *
-     * NOT an experimental condition.
-     *
-     * Input:
-     *
-     * standardized MindAlert brief only
-     *
-     * Output:
-     *
-     * hidden reference risk register
-     *
-     * The risk register is stored in ethics_baseline
-     * and NEVER returned to the participant.
-     */
+    /* ====================================================================== */
+    /* GENERATE ONE-SHOT BASELINE                                             */
+    /* ====================================================================== */
 
     if (
       action ===
       "generate_baseline"
     ) {
-
-      const startTime =
-        Date.now()
-
-
-      /**
-       * Pure one-shot generation.
-       *
-       * No slots.
-       * No clarification answers.
-       * No conversation.
+      /*
+       * Baseline must use the fixed MindAlert brief.
        */
+      const projectBrief =
+        MINDALEERT_BRIEF
 
-      const {
-        register,
-      } =
-        await llmService.generateRiskRegister(
+      const startTime = Date.now()
+
+      let riskRegister
+
+      try {
+        const result =
+          await llmService.generateRiskRegister(
+            {
+              brief:
+                projectBrief,
+
+              mode:
+                "one_shot",
+
+              slots: [],
+
+              clarificationAnswers:
+                undefined,
+
+              conversation: [],
+            }
+          )
+
+        riskRegister =
+          result.register
+      } catch (error) {
+        console.error(
+          "Baseline generation failed:",
+          error
+        )
+
+        console.error(
+          "Baseline generation context:",
           {
-            brief:
-              MINDALEERT_BRIEF,
-
-            mode:
-              "one_shot",
-
-            slots: [],
-
-            clarificationAnswers:
-              {},
+            model:
+              getModelName(),
           }
         )
 
-      const latency =
+        return publicError(
+          "Failed to generate the baseline.",
+          500
+        )
+      }
+
+      const latencyMs =
         Date.now() - startTime
 
+      let db
 
-      /**
-       * Save hidden baseline.
-       *
-       * ONLY existing ethics_baseline columns
-       * are used.
-       */
-
-      const {
-        error,
-      } = await supabase
-        .from(
-          "ethics_baseline"
+      try {
+        db = requireDatabase()
+      } catch (error) {
+        console.error(
+          "Database configuration error:",
+          error
         )
-        .insert({
-          brief:
-            MINDALEERT_BRIEF,
 
-          brief_version:
-            BRIEF_VERSION,
+        return publicError(
+          "The study database is temporarily unavailable.",
+          500
+        )
+      }
 
-          model:
-            MODEL,
+      try {
+        /*
+         * Baseline is stored separately and
+         * is never shown to participants.
+         */
+        const {
+          error: saveError,
+        } =
+          await db
+            .from("ethics_baseline")
+            .insert({
+              brief:
+                projectBrief,
 
-          prompt_version:
-            ONE_SHOT_PROMPT_VERSION,
+              brief_version:
+                "mindalert-v1",
 
-          temperature:
-            TEMPERATURE,
+              model:
+                getModelName(),
 
-          max_tokens:
-            MAX_TOKENS,
+              prompt_version:
+                ONE_SHOT_PROMPT_VERSION,
 
-          risk_register:
-            register,
+              temperature:
+                TEMPERATURE,
+
+              max_tokens:
+                MAX_TOKENS,
+
+              risk_register:
+                riskRegister,
+            })
+
+        if (saveError) {
+          console.error(
+            "Failed to save baseline:",
+            saveError
+          )
+
+          return publicError(
+            "Baseline was generated, but saving failed.",
+            500
+          )
+        }
+      } catch (error) {
+        console.error(
+          "Baseline database insert exception:",
+          error
+        )
+
+        return publicError(
+          "Baseline was generated, but saving failed.",
+          500
+        )
+      }
+
+     return NextResponse.json({
+  success: true,
+  register: riskRegister,
+  latencyMs,
+ })
+    }
+
+    /* ====================================================================== */
+    /* SAVE SURVEY                                                            */
+    /* ====================================================================== */
+
+    if (action === "save_survey") {
+      if (!session_id) {
+        return publicError(
+          "Missing session_id.",
+          400
+        )
+      }
+
+      if (
+        !answers ||
+        typeof answers !== "object"
+      ) {
+        return publicError(
+          "Missing or invalid survey answers.",
+          400
+        )
+      }
+
+      const isSurveyA =
+        task_type === "surveyA"
+
+      const isSurveyB =
+        task_type === "surveyB"
+
+      if (!isSurveyA && !isSurveyB) {
+        return publicError(
+          "Invalid survey type.",
+          400
+        )
+      }
+
+      try {
+        const conditionOrderValue =
+          getConditionOrderValue(
+            condition_order
+          )
+
+        /*
+         * Database columns:
+         *
+         * survey_a_time_ms
+         * survey_b_time_ms
+         *
+         * There are no submitted_at columns.
+         */
+        const surveyTimeMs =
+          typeof duration_ms ===
+          "number"
+            ? duration_ms
+            : null
+
+        let db
+
+        try {
+          db = requireDatabase()
+        } catch (error) {
+          console.error(
+            "Database configuration error:",
+            error
+          )
+
+          return publicError(
+            "The study database is temporarily unavailable.",
+            500
+          )
+        }
+
+        /* ------------------------------------------------------------------ */
+        /* Find existing participant response                                 */
+        /* ------------------------------------------------------------------ */
+
+        const {
+          data: existingResponse,
+          error: lookupError,
+        } = await db
+          .from("study_responses")
+          .select(
+            "id, participant_id"
+          )
+          .eq(
+            "participant_id",
+            session_id
+          )
+          .limit(1)
+          .maybeSingle()
+
+        if (lookupError) {
+          console.error(
+            "Failed to look up survey response:",
+            lookupError
+          )
+
+          return publicError(
+            "Failed to check the existing survey response.",
+            500
+          )
+        }
+
+        /* ------------------------------------------------------------------ */
+        /* UPDATE                                                              */
+        /* ------------------------------------------------------------------ */
+
+        if (existingResponse) {
+          const updateData =
+            isSurveyA
+              ? {
+                  survey_a:
+                    answers,
+
+                  survey_a_time_ms:
+                    surveyTimeMs,
+
+                  condition_order:
+                    conditionOrderValue,
+                }
+              : {
+                  survey_b:
+                    answers,
+
+                  survey_b_time_ms:
+                    surveyTimeMs,
+
+                  condition_order:
+                    conditionOrderValue,
+                }
+
+          const {
+            error: updateError,
+          } = await db
+            .from("study_responses")
+            .update(updateData)
+            .eq(
+              "participant_id",
+              session_id
+            )
+
+          if (updateError) {
+            console.error(
+              "Failed to update survey:",
+              updateError
+            )
+
+            return publicError(
+              "Failed to update the survey.",
+              500
+            )
+          }
+
+          return NextResponse.json({
+            success: true,
+
+            message:
+              "Survey updated successfully.",
+          })
+        }
+
+        /* ------------------------------------------------------------------ */
+        /* INSERT                                                              */
+        /* ------------------------------------------------------------------ */
+
+        const insertData = {
+          participant_id:
+            session_id,
+
+          session_id:
+            session_id,
+
+          task_type:
+            task_type,
+
+          survey_a:
+            isSurveyA
+              ? answers
+              : null,
+
+          survey_b:
+            isSurveyB
+              ? answers
+              : null,
+
+          survey_a_time_ms:
+            isSurveyA
+              ? surveyTimeMs
+              : null,
+
+          survey_b_time_ms:
+            isSurveyB
+              ? surveyTimeMs
+              : null,
+
+          condition_order:
+            conditionOrderValue,
 
           created_at:
             new Date().toISOString(),
+        }
+
+        const {
+          error: insertError,
+        } = await db
+          .from("study_responses")
+          .insert(
+            insertData
+          )
+
+        if (insertError) {
+          console.error(
+            "Failed to insert survey:",
+            insertError
+          )
+
+          return publicError(
+            "Failed to save the survey.",
+            500
+          )
+        }
+
+        return NextResponse.json({
+          success: true,
+
+          message:
+            "Survey saved successfully.",
         })
-
-
-      if (error) {
-
+      } catch (error) {
         console.error(
-          "FAILED TO SAVE ONE-SHOT BASELINE"
+          "Save survey exception:",
+          error
         )
 
-        console.error(
-          "Supabase error:",
-          {
-            code:
-              error.code,
-
-            message:
-              error.message,
-
-            details:
-              error.details,
-
-            hint:
-              error.hint,
-          }
-        )
-
-        return NextResponse.json(
-          {
-            error:
-              "The baseline analysis was generated, but the database could not save it.",
-
-            database_error:
-              error.message,
-          },
-          {
-            status: 500,
-          }
+        return publicError(
+          "Failed to save the survey.",
+          500
         )
       }
-
-
-      /**
-       * IMPORTANT:
-       *
-       * Do NOT return register.
-       *
-       * This guarantees that the hidden baseline
-       * cannot accidentally be displayed by the
-       * participant-facing component.
-       */
-
-      return NextResponse.json({
-        success: true,
-
-        baseline_saved: true,
-
-        brief_version:
-          BRIEF_VERSION,
-
-        model:
-          MODEL,
-
-        prompt_version:
-          ONE_SHOT_PROMPT_VERSION,
-
-        latency_ms:
-          latency,
-      })
     }
 
-
-    /**
-     * -----------------------------------------------------
-     * UNKNOWN ACTION
-     * -----------------------------------------------------
-     */
-
-    return NextResponse.json(
-      {
-        error:
-          `Unknown action: ${String(
-            action
-          )}`,
-      },
-      {
-        status: 400,
-      }
-    )
-
-  } catch (error) {
+    /* ====================================================================== */
+    /* UNKNOWN ACTION                                                         */
+    /* ====================================================================== */
 
     console.error(
-      "ANALYZE API ERROR:",
+      "Unknown API action:",
+      action
+    )
+
+    return publicError(
+      "Invalid request.",
+      400
+    )
+  } catch (error) {
+    console.error(
+      "API /analyze error:",
       error
     )
 
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Unknown server error."
-
-    return NextResponse.json(
-      {
-        error:
-          message,
-      },
-      {
-        status: 500,
-      }
+    return publicError(
+      "Internal server error.",
+      500
     )
   }
 }

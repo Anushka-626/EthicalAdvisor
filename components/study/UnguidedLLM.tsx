@@ -24,6 +24,8 @@ import {
   MAX_UNGUIDED_TURNS,
 } from "@/lib/studyConfig"
 
+import type { RiskRegister } from "@/lib/slots"
+
 interface Props {
   sessionId: string
   conditionOrder: "A_B" | "B_A"
@@ -53,6 +55,12 @@ export function UnguidedLLM({
   const [finishing, setFinishing] =
     useState(false)
 
+  const [register, setRegister] =
+    useState<RiskRegister | null>(null)
+
+  const [error, setError] =
+    useState<string | null>(null)
+
   const [startedAt] =
     useState(Date.now())
 
@@ -67,12 +75,16 @@ export function UnguidedLLM({
       {
         role: "assistant",
         content:
-          "Hello. I am your AI ethics advisor. You can ask me questions about the ethical aspects of the MindAlert project. You decide what you would like to explore.",
+          "Hello. I am an AI assistant helping you think about the MindAlert project. You can ask me questions about the project and its possible ethical implications. You decide what you would like to explore and which questions to ask. You may ask follow-up questions if needed.",
         timestamp:
           new Date().toISOString(),
       },
     ])
   }, [])
+
+  /* ---------------------------------------------------------------------- */
+  /* CHAT                                                                    */
+  /* ---------------------------------------------------------------------- */
 
   const sendMessage = async () => {
     const trimmed =
@@ -115,6 +127,7 @@ export function UnguidedLLM({
 
     setInput("")
     setLoading(true)
+    setError(null)
 
     try {
       const response =
@@ -190,6 +203,10 @@ export function UnguidedLLM({
     }
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* FINISH CHAT + GENERATE FINAL RISK REGISTER                             */
+  /* ---------------------------------------------------------------------- */
+
   const finishAnalysis =
     async () => {
       if (
@@ -210,6 +227,7 @@ export function UnguidedLLM({
       }
 
       setFinishing(true)
+      setError(null)
 
       const durationMs =
         Date.now() -
@@ -267,21 +285,27 @@ export function UnguidedLLM({
         /*
          * IMPORTANT:
          *
-         * The generated risk register is intentionally
-         * NOT stored in React state and NOT displayed.
+         * Do NOT call onComplete() here.
          *
-         * It has already been stored by the API.
-         *
-         * The participant goes directly to the survey.
+         * The participant must first see and review
+         * the generated risk register.
          */
-        onComplete()
+        if (!data.register) {
+          throw new Error(
+            "The AI generated a response, but no risk register was returned."
+          )
+        }
+
+        setRegister(
+          data.register
+        )
       } catch (error) {
         console.error(
           "Final unguided risk register error:",
           error
         )
 
-        alert(
+        setError(
           error instanceof Error
             ? error.message
             : "Failed to finish the analysis."
@@ -291,8 +315,291 @@ export function UnguidedLLM({
       }
     }
 
+  /* ---------------------------------------------------------------------- */
+  /* RISK REGISTER RESULT                                                   */
+  /* ---------------------------------------------------------------------- */
+
+  if (register) {
+    return (
+      <div className="space-y-6">
+
+        <Card>
+
+          <CardHeader>
+
+            <CardTitle>
+              Generated Ethical Risk Register
+            </CardTitle>
+
+            <p className="text-sm text-muted-foreground">
+              Please review the generated ethical
+              risk analysis carefully before
+              continuing to the survey.
+            </p>
+
+          </CardHeader>
+
+          <CardContent className="space-y-6">
+
+            {/* Project information */}
+
+            <div className="border-b border-gray-100 pb-3">
+
+              <h2 className="text-base font-semibold text-gray-900">
+                {register.projectTitle}
+              </h2>
+
+              <p className="text-xs text-gray-400 mt-0.5">
+                Unguided AI Analysis ·{" "}
+                {new Date(
+                  register.generatedAt
+                ).toLocaleString()}
+              </p>
+
+            </div>
+
+
+            {/* Risks */}
+
+            <div className="space-y-3">
+
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                Identified Risks (
+                {register.risks.length}
+                )
+              </p>
+
+              {register.risks.map(
+                (risk, index) => {
+
+                  const severityStyles: Record<
+                    string,
+                    string
+                  > = {
+                    critical:
+                      "bg-red-100 text-red-800 border-red-200",
+
+                    high:
+                      "bg-orange-100 text-orange-800 border-orange-200",
+
+                    medium:
+                      "bg-yellow-100 text-yellow-800 border-yellow-200",
+
+                    low:
+                      "bg-green-100 text-green-800 border-green-200",
+                  }
+
+                  const severityClass =
+                    severityStyles[
+                      risk.severity
+                    ] ??
+                    "bg-gray-100 text-gray-700 border-gray-200"
+
+                  return (
+                    <div
+                      key={index}
+                      className="rounded-lg border border-gray-200 p-4 space-y-3 bg-white"
+                    >
+
+                      {/* Risk header */}
+
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+
+                        <span className="text-sm font-semibold capitalize text-gray-900">
+                          {risk.category}
+                        </span>
+
+                        <div className="flex items-center gap-2">
+
+                          <span
+                            className={`rounded border px-2 py-0.5 text-xs font-semibold uppercase ${severityClass}`}
+                          >
+                            {risk.severity}
+                          </span>
+
+                          <span className="text-xs text-gray-400 capitalize">
+                            {risk.likelihood.replace(
+                              /_/g,
+                              " "
+                            )}
+                          </span>
+
+                        </div>
+
+                      </div>
+
+
+                      {/* Description */}
+
+                      <p className="text-sm text-gray-700 leading-relaxed">
+                        {risk.description}
+                      </p>
+
+
+                      {/* Stakeholders */}
+
+                      <p className="text-xs text-gray-500">
+
+                        <span className="font-medium">
+                          Affected:{" "}
+                        </span>
+
+                        {risk.affectedStakeholders.join(
+                          ", "
+                        )}
+
+                      </p>
+
+
+                      {/* Mitigations */}
+
+                      {risk.mitigations.length >
+                        0 && (
+                        <ul className="mt-1 space-y-1 pt-2 border-t border-gray-100">
+
+                          {risk.mitigations.map(
+                            (
+                              mitigation,
+                              mitigationIndex
+                            ) => (
+                              <li
+                                key={
+                                  mitigationIndex
+                                }
+                                className="flex gap-2 text-xs text-gray-600"
+                              >
+
+                                <span className="text-green-500 shrink-0 mt-0.5">
+                                  ✓
+                                </span>
+
+                                <span>
+                                  {mitigation}
+                                </span>
+
+                              </li>
+                            )
+                          )}
+
+                        </ul>
+                      )}
+
+                    </div>
+                  )
+                }
+              )}
+
+            </div>
+
+
+            {/* Prioritised actions */}
+
+            {register
+              .prioritisedActions
+              .length > 0 && (
+              <div className="rounded-lg bg-gray-50 border border-gray-200 p-4">
+
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                  Prioritised Actions
+                </p>
+
+                <ol className="space-y-2 list-decimal list-inside">
+
+                  {register.prioritisedActions.map(
+                    (
+                      action,
+                      index
+                    ) => (
+                      <li
+                        key={index}
+                        className="text-sm text-gray-700 leading-relaxed"
+                      >
+                        {action}
+                      </li>
+                    )
+                  )}
+
+                </ol>
+
+              </div>
+            )}
+
+
+            {/* Continue */}
+
+            <Button
+              type="button"
+              onClick={onComplete}
+              className="w-full"
+            >
+              Continue to Survey →
+            </Button>
+
+          </CardContent>
+
+        </Card>
+
+      </div>
+    )
+  }
+
+
+  /* ---------------------------------------------------------------------- */
+  /* ERROR                                                                  */
+  /* ---------------------------------------------------------------------- */
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+
+        <Card>
+
+          <CardHeader>
+
+            <CardTitle>
+              Something went wrong
+            </CardTitle>
+
+          </CardHeader>
+
+          <CardContent className="space-y-4">
+
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+
+              <p className="text-sm text-red-700">
+                {error}
+              </p>
+
+            </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setError(null)
+                setFinishing(false)
+              }}
+            >
+              Try again
+            </Button>
+
+          </CardContent>
+
+        </Card>
+
+      </div>
+    )
+  }
+
+
+  /* ---------------------------------------------------------------------- */
+  /* CHAT UI                                                                */
+  /* ---------------------------------------------------------------------- */
+
   return (
     <div className="space-y-6">
+
+      {/* Project brief */}
 
       <Card>
 
@@ -329,6 +636,8 @@ export function UnguidedLLM({
       </Card>
 
 
+      {/* Unguided conversation */}
+
       <Card>
 
         <CardHeader>
@@ -340,6 +649,8 @@ export function UnguidedLLM({
         </CardHeader>
 
         <CardContent className="space-y-6">
+
+          {/* Conversation */}
 
           <div className="space-y-4">
 
@@ -363,7 +674,7 @@ export function UnguidedLLM({
                     {message.role ===
                     "user"
                       ? "You"
-                      : "AI Ethics Advisor"}
+                      : "AI Assistant"}
                   </p>
 
                   <p className="text-sm leading-6 whitespace-pre-wrap">
@@ -377,6 +688,8 @@ export function UnguidedLLM({
 
           </div>
 
+
+          {/* Question input */}
 
           <div className="space-y-2">
 
@@ -422,6 +735,8 @@ export function UnguidedLLM({
           </div>
 
 
+          {/* Buttons */}
+
           <div className="flex flex-col sm:flex-row gap-3">
 
             <Button
@@ -466,7 +781,7 @@ export function UnguidedLLM({
               {finishing ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Finishing analysis...
+                  Generating risk register...
                 </>
               ) : (
                 "Finish analysis and generate risk register"
@@ -476,6 +791,8 @@ export function UnguidedLLM({
 
           </div>
 
+
+          {/* Explanation */}
 
           <div className="rounded-lg border p-4 bg-muted/20">
 

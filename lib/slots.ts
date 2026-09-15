@@ -15,11 +15,6 @@ export type RiskCategory =
 
 /**
  * Severity used for all experimental conditions.
- *
- * The same three-level scale is used for:
- * - hidden one-shot baseline
- * - Condition A: Unguided
- * - Condition B: Clarify-first
  */
 export type Severity =
   | "low"
@@ -28,11 +23,6 @@ export type Severity =
 
 /**
  * Likelihood used for all experimental conditions.
- *
- * The same three-level scale is used for:
- * - hidden one-shot baseline
- * - Condition A: Unguided
- * - Condition B: Clarify-first
  */
 export type Likelihood =
   | "low"
@@ -119,8 +109,8 @@ export const SLOT_DEFINITIONS: Record<
 /**
  * General question bank.
  *
- * This can remain available for other functionality,
- * but it is NOT used for the fixed Task B experiment.
+ * This is retained for possible future/general functionality.
+ * It is NOT used for the fixed Condition B experiment.
  */
 export const QUESTION_BANK: ClarificationQuestion[] = [
   {
@@ -165,39 +155,37 @@ export const QUESTION_BANK: ClarificationQuestion[] = [
  * FIXED CONDITION B QUESTIONS
  * =========================================================
  *
- * These three questions are identical for EVERY participant.
+ * These three questions are identical for every participant.
  *
- * They are intentionally simple so participants provide
- * additional contextual information without having to
- * design an entire ethics policy.
+ * They define the missing project details used by the
+ * Clarify-first condition.
  *
- * DO NOT generate these questions dynamically with the LLM.
+ * IMPORTANT:
+ * These are the professor-approved experimental questions.
  */
 export const CLARIFY_FIRST_QUESTIONS: ClarificationQuestion[] = [
   {
     slotId: "provenance",
     question:
-      "What should students know about how their personal data is collected and used by MindAlert?",
+      "What consent or opt-out process, if any, will MindAlert use before collecting and using students' personal data?",
   },
 
   {
     slotId: "automation",
     question:
-      "Who should check a student's result before MindAlert takes action?",
+      "Will a high-risk classification be reviewed by a human before any action is taken? If yes, who will review it?",
   },
 
   {
     slotId: "consequences",
     question:
-      "What should a student be able to do if MindAlert makes a wrong prediction about them?",
+      "If a student believes that their risk classification is incorrect, can they request a review or challenge the decision? If yes, how?",
   },
 ]
 
 /**
  * Phrases indicating that information was not explicitly
  * provided in the project brief.
- *
- * These are used when identifying missing contextual slots.
  */
 export const HEDGING_PHRASES = [
   "it is unclear whether",
@@ -233,9 +221,6 @@ export function isSlotMissing(
  * IMPORTANT:
  * Condition B does NOT use this function.
  * Condition B always uses CLARIFY_FIRST_QUESTIONS.
- *
- * This function is retained only for possible future/general
- * functionality and should not be used in the experiment.
  */
 export function selectClarificationQuestions(
   slots: Slot[],

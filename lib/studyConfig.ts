@@ -54,27 +54,115 @@ at five universities within twelve months.
 export const BRIEF_VERSION = "mindalert-v1.0"
 
 // ------------------------------------------------------------
-// Unguided LLM condition
+// Unguided AI condition
 //
-// This is deliberately reasonably large so participants have
-// enough opportunity to explore the ethical issues.
-// The same limit applies to every participant.
+// Maximum number of participant prompts/questions.
+// This limit is identical for every participant.
 // ------------------------------------------------------------
 
 export const MAX_UNGUIDED_TURNS = 10
 
 // ------------------------------------------------------------
-// Counterbalancing
+// Condition B – FIXED clarification questions
+//
+// IMPORTANT:
+// These questions must be identical for every participant.
+// Do NOT generate these dynamically with the LLM.
 // ------------------------------------------------------------
 
-export function getConditionOrder(): ConditionOrder {
-  return Math.random() < 0.5 ? "A_B" : "B_A"
+export const FIXED_CLARIFICATION_QUESTIONS = [
+  {
+    id: "q1",
+    question:
+      "What consent or opt-out process, if any, will MindAlert use before collecting and using students' personal data?",
+  },
+  {
+    id: "q2",
+    question:
+      "Will a high-risk classification be reviewed by a human before any action is taken? If yes, who will review it?",
+  },
+  {
+    id: "q3",
+    question:
+      "If a student believes that their risk classification is incorrect, can they request a review or challenge the decision? If yes, how?",
+  },
+] as const
+
+// ------------------------------------------------------------
+// Instructions shown before the clarification questions
+// ------------------------------------------------------------
+
+export const CLARIFICATION_INSTRUCTIONS = `
+Some project details are not specified in the brief. For these
+questions, assume that you are helping define those missing project
+details. Please make a reasonable decision based on your understanding
+of the project. There are no right or wrong answers.
+`
+
+// ------------------------------------------------------------
+// Counterbalancing
+//
+// Condition A = Unguided AI Analysis
+// Condition B = Clarify-first AI Analysis
+//
+// We use the anonymous session ID to assign the order.
+// This makes the assignment deterministic:
+//   even -> A_B
+//   odd  -> B_A
+//
+// The participant keeps the same order throughout the study.
+// ------------------------------------------------------------
+
+export function getConditionOrderFromSessionId(
+  sessionId: string
+): ConditionOrder {
+  if (!sessionId) {
+    return "A_B"
+  }
+
+  // Take the final hexadecimal character of the UUID.
+  const lastCharacter = sessionId.charAt(
+    sessionId.length - 1
+  )
+
+  const numericValue = parseInt(lastCharacter, 16)
+
+  if (Number.isNaN(numericValue)) {
+    return "A_B"
+  }
+
+  return numericValue % 2 === 0 ? "A_B" : "B_A"
 }
 
 // ------------------------------------------------------------
-// Store condition order in localStorage
-// This ensures the participant keeps the same order throughout
-// the entire study.
+// Get or create anonymous session ID
+// ------------------------------------------------------------
+
+export function getStoredSessionId(): string {
+  if (typeof window === "undefined") {
+    return ""
+  }
+
+  let sessionId = localStorage.getItem("session_id")
+
+  if (!sessionId) {
+    sessionId = crypto.randomUUID()
+
+    localStorage.setItem(
+      "session_id",
+      sessionId
+    )
+  }
+
+  return sessionId
+}
+
+// ------------------------------------------------------------
+// Get condition order
+//
+// If an order already exists, use it.
+// Otherwise calculate it from the anonymous session ID
+// and store it.
 // ------------------------------------------------------------
 
 export function getStoredConditionOrder(): ConditionOrder {
@@ -92,7 +180,10 @@ export function getStoredConditionOrder(): ConditionOrder {
     return stored
   }
 
-  const newOrder = getConditionOrder()
+  const sessionId = getStoredSessionId()
+
+  const newOrder =
+    getConditionOrderFromSessionId(sessionId)
 
   localStorage.setItem(
     "condition_order",
@@ -103,25 +194,29 @@ export function getStoredConditionOrder(): ConditionOrder {
 }
 
 // ------------------------------------------------------------
-// Anonymous participant/session ID
+// Convenience helper
+//
+// Returns which condition should be shown first.
 // ------------------------------------------------------------
 
-export function getStoredSessionId(): string {
-  if (typeof window === "undefined") {
-    return ""
-  }
+export function getFirstCondition(
+  conditionOrder: ConditionOrder
+): "A" | "B" {
+  return conditionOrder === "A_B"
+    ? "A"
+    : "B"
+}
 
-  let sessionId =
-    localStorage.getItem("session_id")
+// ------------------------------------------------------------
+// Convenience helper
+//
+// Returns which condition should be shown second.
+// ------------------------------------------------------------
 
-  if (!sessionId) {
-    sessionId = crypto.randomUUID()
-
-    localStorage.setItem(
-      "session_id",
-      sessionId
-    )
-  }
-
-  return sessionId
+export function getSecondCondition(
+  conditionOrder: ConditionOrder
+): "A" | "B" {
+  return conditionOrder === "A_B"
+    ? "B"
+    : "A"
 }

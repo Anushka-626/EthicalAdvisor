@@ -6,7 +6,6 @@ import { Header } from "@/components/study/header"
 import { Footer } from "@/components/study/footer"
 import { StudyIntro } from "@/components/study/study-intro"
 
-import { OneShotBaseline } from "@/components/study/OneShotBaseline"
 import { TaskA } from "@/components/study/taskAquestionnaire"
 import { TaskB } from "@/components/study/task-b"
 
@@ -20,7 +19,6 @@ import {
 
 type StudyPhase =
   | "intro"
-  | "baseline"
   | "taskA"
   | "surveyA"
   | "taskB"
@@ -64,19 +62,22 @@ export default function Home() {
     if (!sessionId) return
 
     /*
-     * The one-shot baseline is always generated first.
-     * It is not an experimental condition.
-     */
-    setPhase("baseline")
-    scrollToTop()
-  }
-
-  const handleBaselineComplete = () => {
-    /*
-     * After the hidden baseline:
+     * The one-shot baseline is generated separately on the backend
+     * and is NOT shown to participants.
      *
-     * A_B -> Unguided first
-     * B_A -> Clarify-first first
+     * Experimental flow:
+     *
+     * A_B:
+     *   Unguided AI Analysis
+     *   -> Survey
+     *   -> Clarify-first AI Analysis
+     *   -> Survey
+     *
+     * B_A:
+     *   Clarify-first AI Analysis
+     *   -> Survey
+     *   -> Unguided AI Analysis
+     *   -> Survey
      */
     if (conditionOrder === "A_B") {
       setPhase("taskA")
@@ -94,11 +95,11 @@ export default function Home() {
 
   const handleSurveyAComplete = () => {
     /*
-     * A_B:
-     * Unguided -> Survey -> Clarify-first
+     * If the participant started with A,
+     * continue to B.
      *
-     * B_A:
-     * Clarify-first -> Survey -> Unguided
+     * If the participant started with B,
+     * A is the second condition and the study ends.
      */
     if (conditionOrder === "A_B") {
       setPhase("taskB")
@@ -116,8 +117,11 @@ export default function Home() {
 
   const handleSurveyBComplete = () => {
     /*
-     * B_A:
-     * Clarify-first -> Survey -> Unguided
+     * If the participant started with B,
+     * continue to A.
+     *
+     * If the participant started with A,
+     * B is the second condition and the study ends.
      */
     if (conditionOrder === "B_A") {
       setPhase("taskA")
@@ -136,14 +140,6 @@ export default function Home() {
         {phase === "intro" && (
           <StudyIntro
             onStart={handleStart}
-          />
-        )}
-
-        {phase === "baseline" && (
-          <OneShotBaseline
-            sessionId={sessionId}
-            conditionOrder={conditionOrder}
-            onComplete={handleBaselineComplete}
           />
         )}
 
