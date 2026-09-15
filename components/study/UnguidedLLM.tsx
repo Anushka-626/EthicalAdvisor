@@ -162,21 +162,87 @@ export function UnguidedLLM({
           }
         )
 
-      const data =
-        await response.json()
+      /*
+       * Try to read the JSON response safely.
+       */
+      let data: any = null
+
+      try {
+        data = await response.json()
+      } catch {
+        data = null
+      }
+
+      /*
+       * Log the complete backend response.
+       * This helps diagnose API/Supabase/LLM errors.
+       */
+      console.log(
+        "UNGUIDED CHAT API RESPONSE:",
+        {
+          status:
+            response.status,
+
+          statusText:
+            response.statusText,
+
+          ok:
+            response.ok,
+
+          data,
+        }
+      )
 
       if (!response.ok) {
-        throw new Error(
+        /*
+         * The backend may return:
+         *
+         * {
+         *   error: "...",
+         *   details: {
+         *     message: "...",
+         *     details: "...",
+         *     hint: "...",
+         *     code: "..."
+         *   }
+         * }
+         *
+         * Prefer the most useful error.
+         */
+
+        const backendMessage =
+          data?.details?.message ||
+          data?.details ||
           data?.error ||
-            "Failed to receive a response from the AI."
+          `AI request failed with status ${response.status}`
+
+        throw new Error(
+          typeof backendMessage ===
+            "string"
+            ? backendMessage
+            : JSON.stringify(
+                backendMessage
+              )
+        )
+      }
+
+      /*
+       * Make sure the backend actually returned
+       * an AI response.
+       */
+      if (!data?.response) {
+        throw new Error(
+          "The AI response was empty."
         )
       }
 
       const assistantMessage:
         Message = {
         role: "assistant",
+
         content:
           data.response,
+
         timestamp:
           new Date().toISOString(),
       }
@@ -189,14 +255,21 @@ export function UnguidedLLM({
       )
     } catch (error) {
       console.error(
-        "Unguided chat error:",
+        "UNGUIDED CHAT ERROR:",
         error
       )
 
-      alert(
+      const errorMessage =
         error instanceof Error
           ? error.message
           : "Something went wrong while contacting the AI."
+
+      setError(
+        errorMessage
+      )
+
+      alert(
+        errorMessage
       )
     } finally {
       setLoading(false)
@@ -272,25 +345,55 @@ export function UnguidedLLM({
             }
           )
 
-        const data =
-          await response.json()
+        let data: any = null
+
+        try {
+          data = await response.json()
+        } catch {
+          data = null
+        }
+
+        /*
+         * Log the complete response from the final
+         * risk-register request.
+         */
+        console.error(
+          "UNGUIDED FINAL API RESPONSE:",
+          {
+            status:
+              response.status,
+
+            statusText:
+              response.statusText,
+
+            ok:
+              response.ok,
+
+            data,
+          }
+        )
 
         if (!response.ok) {
-          throw new Error(
+          const backendMessage =
+            data?.details?.message ||
+            data?.details ||
             data?.error ||
-              "Failed to generate the final risk register."
+            `Failed to generate the final risk register. Status: ${response.status}`
+
+          throw new Error(
+            typeof backendMessage ===
+              "string"
+              ? backendMessage
+              : JSON.stringify(
+                  backendMessage
+                )
           )
         }
 
         /*
-         * IMPORTANT:
-         *
-         * Do NOT call onComplete() here.
-         *
-         * The participant must first see and review
-         * the generated risk register.
+         * The backend must return a risk register.
          */
-        if (!data.register) {
+        if (!data?.register) {
           throw new Error(
             "The AI generated a response, but no risk register was returned."
           )
@@ -301,14 +404,17 @@ export function UnguidedLLM({
         )
       } catch (error) {
         console.error(
-          "Final unguided risk register error:",
+          "FINAL UNGUIDED RISK REGISTER ERROR:",
           error
         )
 
-        setError(
+        const errorMessage =
           error instanceof Error
             ? error.message
             : "Failed to finish the analysis."
+
+        setError(
+          errorMessage
         )
 
         setFinishing(false)
@@ -357,7 +463,6 @@ export function UnguidedLLM({
               </p>
 
             </div>
-
 
             {/* Risks */}
 
@@ -428,13 +533,11 @@ export function UnguidedLLM({
 
                       </div>
 
-
                       {/* Description */}
 
                       <p className="text-sm text-gray-700 leading-relaxed">
                         {risk.description}
                       </p>
-
 
                       {/* Stakeholders */}
 
@@ -449,7 +552,6 @@ export function UnguidedLLM({
                         )}
 
                       </p>
-
 
                       {/* Mitigations */}
 
@@ -491,7 +593,6 @@ export function UnguidedLLM({
 
             </div>
 
-
             {/* Prioritised actions */}
 
             {register
@@ -524,7 +625,6 @@ export function UnguidedLLM({
               </div>
             )}
 
-
             {/* Continue */}
 
             <Button
@@ -542,7 +642,6 @@ export function UnguidedLLM({
       </div>
     )
   }
-
 
   /* ---------------------------------------------------------------------- */
   /* ERROR                                                                  */
@@ -566,7 +665,7 @@ export function UnguidedLLM({
 
             <div className="rounded-lg border border-red-200 bg-red-50 p-4">
 
-              <p className="text-sm text-red-700">
+              <p className="text-sm text-red-700 whitespace-pre-wrap">
                 {error}
               </p>
 
@@ -590,7 +689,6 @@ export function UnguidedLLM({
       </div>
     )
   }
-
 
   /* ---------------------------------------------------------------------- */
   /* CHAT UI                                                                */
@@ -634,7 +732,6 @@ export function UnguidedLLM({
         </CardContent>
 
       </Card>
-
 
       {/* Unguided conversation */}
 
@@ -688,7 +785,6 @@ export function UnguidedLLM({
 
           </div>
 
-
           {/* Question input */}
 
           <div className="space-y-2">
@@ -734,7 +830,6 @@ export function UnguidedLLM({
 
           </div>
 
-
           {/* Buttons */}
 
           <div className="flex flex-col sm:flex-row gap-3">
@@ -764,7 +859,6 @@ export function UnguidedLLM({
 
             </Button>
 
-
             <Button
               onClick={
                 finishAnalysis
@@ -790,7 +884,6 @@ export function UnguidedLLM({
             </Button>
 
           </div>
-
 
           {/* Explanation */}
 

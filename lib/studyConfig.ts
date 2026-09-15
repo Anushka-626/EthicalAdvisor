@@ -88,6 +88,8 @@ export const FIXED_CLARIFICATION_QUESTIONS = [
   },
 ] as const
 
+export const CLARIFY_FIRST_QUESTIONS =
+  FIXED_CLARIFICATION_QUESTIONS
 // ------------------------------------------------------------
 // Instructions shown before the clarification questions
 // ------------------------------------------------------------

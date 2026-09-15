@@ -62,12 +62,6 @@ const commonQuestions: SurveyQuestion[] = [
   },
 ]
 
-const comparisonQuestion: SurveyQuestion = {
-  id: "approach_reflection",
-  text: "Which approach helped you think more carefully about the ethical risks, and why?",
-  type: "text",
-}
-
 export function SurveyForm({
   taskType,
   conditionOrder,
@@ -88,12 +82,10 @@ export function SurveyForm({
       ? "Unguided AI Analysis"
       : "Clarify-first AI Analysis"
 
-  // Question 6 is shown ONLY in Survey B,
-  // after the participant has experienced both approaches.
-  const questions =
-    taskType === "surveyB"
-      ? [...commonQuestions, comparisonQuestion]
-      : commonQuestions
+  // Only condition-specific questions are shown here.
+  // The final comparison question is asked after BOTH
+  // conditions have been completed.
+  const questions = commonQuestions
 
   const updateAnswer = (
     questionId: string,
