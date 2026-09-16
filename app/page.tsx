@@ -14,7 +14,6 @@ import { StudyComplete } from "@/components/study/study-complete"
 
 import {
   ConditionOrder,
-  getStoredConditionOrder,
   MINDALEERT_BRIEF,
 } from "@/lib/studyConfig"
 
@@ -26,6 +25,91 @@ type StudyPhase =
   | "surveyB"
   | "comparison"
   | "complete"
+
+const SESSION_ID_KEY = "session_id"
+const CONDITION_ORDER_PREFIX = "condition_order_"
+
+/**
+ * Generate a random counterbalanced condition order.
+ *
+ * A_B:
+ *   Unguided -> Survey -> Clarify-first -> Survey
+ *
+ * B_A:
+ *   Clarify-first -> Survey -> Unguided -> Survey
+ */
+function generateConditionOrder(): ConditionOrder {
+  return Math.random() < 0.5 ? "A_B" : "B_A"
+}
+
+/**
+ * Get the condition order belonging to a specific session.
+ *
+ * The order is stored separately for each session so that:
+ *
+ * - refreshing the page keeps the same experimental condition
+ * - starting a new session gets a new random assignment
+ */
+function getConditionOrderForSession(
+  sessionId: string
+): ConditionOrder {
+  const key =
+    `${CONDITION_ORDER_PREFIX}${sessionId}`
+
+  const stored =
+    localStorage.getItem(key)
+
+  if (
+    stored === "A_B" ||
+    stored === "B_A"
+  ) {
+    return stored
+  }
+
+  const newOrder =
+    generateConditionOrder()
+
+  localStorage.setItem(
+    key,
+    newOrder
+  )
+
+  return newOrder
+}
+
+/**
+ * Create a completely new study session.
+ *
+ * This is used when the participant starts the study
+ * for the first time and when they explicitly restart
+ * after completing the study.
+ */
+function createNewStudySession(): {
+  sessionId: string
+  conditionOrder: ConditionOrder
+} {
+  const newSessionId =
+    crypto.randomUUID()
+
+  const newConditionOrder =
+    generateConditionOrder()
+
+  localStorage.setItem(
+    SESSION_ID_KEY,
+    newSessionId
+  )
+
+  localStorage.setItem(
+    `${CONDITION_ORDER_PREFIX}${newSessionId}`,
+    newConditionOrder
+  )
+
+  return {
+    sessionId: newSessionId,
+    conditionOrder:
+      newConditionOrder,
+  }
+}
 
 export default function Home() {
   const [phase, setPhase] =
@@ -46,20 +130,44 @@ export default function Home() {
   const [comparisonError, setComparisonError] =
     useState("")
 
+  /*
+   * Initialise the participant's session.
+   *
+   * If a session already exists:
+   *   - keep that session
+   *   - keep its condition order
+   *
+   * If no session exists:
+   *   - create a new session
+   *   - randomly assign A_B or B_A
+   */
   useEffect(() => {
-    let id = localStorage.getItem("session_id")
+    let id =
+      localStorage.getItem(
+        SESSION_ID_KEY
+      )
 
     if (!id) {
-      id = crypto.randomUUID()
-      localStorage.setItem("session_id", id)
+      const newSession =
+        createNewStudySession()
+
+      id = newSession.sessionId
+
+      setSessionId(id)
+      setConditionOrder(
+        newSession.conditionOrder
+      )
+
+      return
     }
 
-    setSessionId(id)
-
     const storedOrder =
-      getStoredConditionOrder()
+      getConditionOrderForSession(id)
 
-    setConditionOrder(storedOrder)
+    setSessionId(id)
+    setConditionOrder(
+      storedOrder
+    )
   }, [])
 
   const scrollToTop = () => {
@@ -73,26 +181,31 @@ export default function Home() {
     if (!sessionId) return
 
     /*
-     * The one-shot baseline is generated separately on the backend
-     * and is NOT shown to participants.
+     * The one-shot baseline is generated separately
+     * on the backend and is NOT shown to participants.
      *
      * Experimental flow:
      *
      * A_B:
+     *
      *   Unguided AI Analysis
-     *   -> Survey
+     *   -> Survey A
      *   -> Clarify-first AI Analysis
-     *   -> Survey
+     *   -> Survey B
      *   -> Final Comparison
      *
      * B_A:
+     *
      *   Clarify-first AI Analysis
-     *   -> Survey
+     *   -> Survey B
      *   -> Unguided AI Analysis
-     *   -> Survey
+     *   -> Survey A
      *   -> Final Comparison
      */
-    if (conditionOrder === "A_B") {
+
+    if (
+      conditionOrder === "A_B"
+    ) {
       setPhase("taskA")
     } else {
       setPhase("taskB")
@@ -101,21 +214,29 @@ export default function Home() {
     scrollToTop()
   }
 
+  /**
+   * Task A has finished.
+   *
+   * What comes next depends on the counterbalancing order.
+   */
   const handleTaskAComplete = () => {
     setPhase("surveyA")
     scrollToTop()
   }
 
+  /**
+   * Survey A has finished.
+   *
+   * A_B:
+   *   A -> Survey A -> B
+   *
+   * B_A:
+   *   B -> Survey B -> A -> Survey A -> Comparison
+   */
   const handleSurveyAComplete = () => {
-    /*
-     * If the participant started with A,
-     * continue to B.
-     *
-     * If the participant started with B,
-     * A is the second condition, so continue
-     * to the final comparison question.
-     */
-    if (conditionOrder === "A_B") {
+    if (
+      conditionOrder === "A_B"
+    ) {
       setPhase("taskB")
     } else {
       setPhase("comparison")
@@ -124,21 +245,27 @@ export default function Home() {
     scrollToTop()
   }
 
+  /**
+   * Task B has finished.
+   */
   const handleTaskBComplete = () => {
     setPhase("surveyB")
     scrollToTop()
   }
 
+  /**
+   * Survey B has finished.
+   *
+   * B_A:
+   *   B -> Survey B -> A
+   *
+   * A_B:
+   *   A -> Survey A -> B -> Survey B -> Comparison
+   */
   const handleSurveyBComplete = () => {
-    /*
-     * If the participant started with B,
-     * continue to A.
-     *
-     * If the participant started with A,
-     * B is the second condition, so continue
-     * to the final comparison question.
-     */
-    if (conditionOrder === "B_A") {
+    if (
+      conditionOrder === "B_A"
+    ) {
       setPhase("taskA")
     } else {
       setPhase("comparison")
@@ -147,6 +274,9 @@ export default function Home() {
     scrollToTop()
   }
 
+  /**
+   * Save the final comparison response.
+   */
   const handleComparisonSubmit = async (
     event: React.FormEvent<HTMLFormElement>
   ) => {
@@ -171,33 +301,35 @@ export default function Home() {
     try {
       setComparisonSubmitting(true)
 
-      const response = await fetch(
-        "/api/analyze",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-          body: JSON.stringify({
-            action: "save_comparison",
-            brief:
-              MINDALEERT_BRIEF,
-            session_id:
-              sessionId,
-            task_type:
-              "comparison",
-            condition_name:
-              "Final Comparison",
-            condition_order:
-              conditionOrder,
-            answers: {
-              approach_reflection:
-                comparisonAnswer.trim(),
+      const response =
+        await fetch(
+          "/api/analyze",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
             },
-          }),
-        }
-      )
+            body: JSON.stringify({
+              action:
+                "save_comparison",
+
+              brief:
+                MINDALEERT_BRIEF,
+
+              session_id:
+                sessionId,
+
+              condition_order:
+                conditionOrder,
+
+              answers: {
+                approach_reflection:
+                  comparisonAnswer.trim(),
+              },
+            }),
+          }
+        )
 
       if (!response.ok) {
         let message =
@@ -208,7 +340,8 @@ export default function Home() {
             await response.json()
 
           if (data?.error) {
-            message = data.error
+            message =
+              data.error
           }
         } catch {
           // Keep default error message.
@@ -231,8 +364,37 @@ export default function Home() {
           : "Failed to save your response. Please try again."
       )
     } finally {
-      setComparisonSubmitting(false)
+      setComparisonSubmitting(
+        false
+      )
     }
+  }
+
+  /**
+   * Start a completely new study session.
+   *
+   * This is important for counterbalancing.
+   * A restart must NOT reuse the previous participant/session.
+   */
+  const handleRestart = () => {
+    const newSession =
+      createNewStudySession()
+
+    setSessionId(
+      newSession.sessionId
+    )
+
+    setConditionOrder(
+      newSession.conditionOrder
+    )
+
+    setComparisonAnswer("")
+    setComparisonError("")
+    setComparisonSubmitting(false)
+
+    setPhase("intro")
+
+    scrollToTop()
   }
 
   return (
@@ -249,34 +411,50 @@ export default function Home() {
         {phase === "taskA" && (
           <TaskA
             sessionId={sessionId}
-            conditionOrder={conditionOrder}
-            onComplete={handleTaskAComplete}
+            conditionOrder={
+              conditionOrder
+            }
+            onComplete={
+              handleTaskAComplete
+            }
           />
         )}
 
         {phase === "surveyA" && (
           <SurveyForm
             taskType="surveyA"
-            conditionOrder={conditionOrder}
+            conditionOrder={
+              conditionOrder
+            }
             sessionId={sessionId}
-            onComplete={handleSurveyAComplete}
+            onComplete={
+              handleSurveyAComplete
+            }
           />
         )}
 
         {phase === "taskB" && (
           <TaskB
             sessionId={sessionId}
-            conditionOrder={conditionOrder}
-            onComplete={handleTaskBComplete}
+            conditionOrder={
+              conditionOrder
+            }
+            onComplete={
+              handleTaskBComplete
+            }
           />
         )}
 
         {phase === "surveyB" && (
           <SurveyForm
             taskType="surveyB"
-            conditionOrder={conditionOrder}
+            conditionOrder={
+              conditionOrder
+            }
             sessionId={sessionId}
-            onComplete={handleSurveyBComplete}
+            onComplete={
+              handleSurveyBComplete
+            }
           />
         )}
 
@@ -309,7 +487,9 @@ export default function Home() {
                   </div>
 
                   <textarea
-                    value={comparisonAnswer}
+                    value={
+                      comparisonAnswer
+                    }
                     onChange={(event) =>
                       setComparisonAnswer(
                         event.target.value
@@ -347,9 +527,9 @@ export default function Home() {
 
         {phase === "complete" && (
           <StudyComplete
-            onRestart={() => {
-              setPhase("intro")
-            }}
+            onRestart={
+              handleRestart
+            }
           />
         )}
       </main>

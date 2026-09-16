@@ -90,6 +90,7 @@ export const FIXED_CLARIFICATION_QUESTIONS = [
 
 export const CLARIFY_FIRST_QUESTIONS =
   FIXED_CLARIFICATION_QUESTIONS
+
 // ------------------------------------------------------------
 // Instructions shown before the clarification questions
 // ------------------------------------------------------------
@@ -101,18 +102,47 @@ details. Please make a reasonable decision based on your understanding
 of the project. There are no right or wrong answers.
 `
 
-// ------------------------------------------------------------
-// Counterbalancing
+// ============================================================
+// COUNTERBALANCING
+// ============================================================
 //
 // Condition A = Unguided AI Analysis
 // Condition B = Clarify-first AI Analysis
 //
-// We use the anonymous session ID to assign the order.
-// This makes the assignment deterministic:
-//   even -> A_B
-//   odd  -> B_A
+// Each NEW session is randomly assigned:
 //
-// The participant keeps the same order throughout the study.
+//   A_B = Unguided first, Clarify-first second
+//   B_A = Clarify-first first, Unguided second
+//
+// The assigned order is then stored against that specific session.
+//
+// IMPORTANT:
+// Do NOT use one global "condition_order" localStorage key.
+// Otherwise all future sessions in the same browser can inherit
+// the previous participant's assignment.
+// ============================================================
+
+const SESSION_ID_KEY = "session_id"
+const CONDITION_ORDER_PREFIX =
+  "condition_order_"
+
+// ------------------------------------------------------------
+// Generate a random condition order
+// ------------------------------------------------------------
+
+export function generateConditionOrder(): ConditionOrder {
+  return Math.random() < 0.5
+    ? "A_B"
+    : "B_A"
+}
+
+// ------------------------------------------------------------
+// Determine condition order from session ID
+//
+// This provides a deterministic assignment for an already-created
+// session while still giving different session IDs different orders.
+//
+// We use the final hexadecimal character of the UUID.
 // ------------------------------------------------------------
 
 export function getConditionOrderFromSessionId(
@@ -122,22 +152,40 @@ export function getConditionOrderFromSessionId(
     return "A_B"
   }
 
-  // Take the final hexadecimal character of the UUID.
-  const lastCharacter = sessionId.charAt(
-    sessionId.length - 1
-  )
+  const lastCharacter =
+    sessionId.charAt(
+      sessionId.length - 1
+    )
 
-  const numericValue = parseInt(lastCharacter, 16)
+  const numericValue =
+    parseInt(lastCharacter, 16)
 
   if (Number.isNaN(numericValue)) {
     return "A_B"
   }
 
-  return numericValue % 2 === 0 ? "A_B" : "B_A"
+  return numericValue % 2 === 0
+    ? "A_B"
+    : "B_A"
+}
+
+// ------------------------------------------------------------
+// Get the storage key for a specific session
+// ------------------------------------------------------------
+
+function getConditionOrderStorageKey(
+  sessionId: string
+): string {
+  return `${CONDITION_ORDER_PREFIX}${sessionId}`
 }
 
 // ------------------------------------------------------------
 // Get or create anonymous session ID
+// ------------------------------------------------------------
+//
+// If a session already exists, keep it.
+//
+// If no session exists, create a new anonymous UUID.
 // ------------------------------------------------------------
 
 export function getStoredSessionId(): string {
@@ -145,13 +193,17 @@ export function getStoredSessionId(): string {
     return ""
   }
 
-  let sessionId = localStorage.getItem("session_id")
+  let sessionId =
+    localStorage.getItem(
+      SESSION_ID_KEY
+    )
 
   if (!sessionId) {
-    sessionId = crypto.randomUUID()
+    sessionId =
+      crypto.randomUUID()
 
     localStorage.setItem(
-      "session_id",
+      SESSION_ID_KEY,
       sessionId
     )
   }
@@ -160,20 +212,42 @@ export function getStoredSessionId(): string {
 }
 
 // ------------------------------------------------------------
-// Get condition order
+// Get condition order for a specific session
+// ------------------------------------------------------------
 //
-// If an order already exists, use it.
-// Otherwise calculate it from the anonymous session ID
-// and store it.
+// First check whether this session already has an assignment.
+//
+// If not, derive the assignment from the session ID and store it
+// specifically for that session.
+//
+// This means refreshing the page does NOT change the condition.
+//
 // ------------------------------------------------------------
 
-export function getStoredConditionOrder(): ConditionOrder {
+export function getStoredConditionOrder(
+  sessionId?: string
+): ConditionOrder {
   if (typeof window === "undefined") {
     return "A_B"
   }
 
+  const currentSessionId =
+    sessionId ||
+    getStoredSessionId()
+
+  if (!currentSessionId) {
+    return "A_B"
+  }
+
+  const storageKey =
+    getConditionOrderStorageKey(
+      currentSessionId
+    )
+
   const stored =
-    localStorage.getItem("condition_order")
+    localStorage.getItem(
+      storageKey
+    )
 
   if (
     stored === "A_B" ||
@@ -182,17 +256,62 @@ export function getStoredConditionOrder(): ConditionOrder {
     return stored
   }
 
-  const sessionId = getStoredSessionId()
-
   const newOrder =
-    getConditionOrderFromSessionId(sessionId)
+    getConditionOrderFromSessionId(
+      currentSessionId
+    )
 
   localStorage.setItem(
-    "condition_order",
+    storageKey,
     newOrder
   )
 
   return newOrder
+}
+
+// ------------------------------------------------------------
+// Create a completely new study session
+// ------------------------------------------------------------
+//
+// Used when the participant starts a new study/restarts after
+// completion.
+//
+// A new session gets a new condition assignment.
+// ------------------------------------------------------------
+
+export function createNewStudySession(): {
+  sessionId: string
+  conditionOrder: ConditionOrder
+} {
+  if (typeof window === "undefined") {
+    return {
+      sessionId: "",
+      conditionOrder: "A_B",
+    }
+  }
+
+  const sessionId =
+    crypto.randomUUID()
+
+  const conditionOrder =
+    generateConditionOrder()
+
+  localStorage.setItem(
+    SESSION_ID_KEY,
+    sessionId
+  )
+
+  localStorage.setItem(
+    getConditionOrderStorageKey(
+      sessionId
+    ),
+    conditionOrder
+  )
+
+  return {
+    sessionId,
+    conditionOrder,
+  }
 }
 
 // ------------------------------------------------------------

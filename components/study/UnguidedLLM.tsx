@@ -163,53 +163,63 @@ export function UnguidedLLM({
         )
 
       /*
-       * Try to read the JSON response safely.
+       * Read the response as raw text first.
+       * This allows us to diagnose malformed or
+       * unexpected API responses.
        */
+      const rawResponse =
+        await response.text()
+
+      console.log(
+        "UNGUIDED CHAT API STATUS:",
+        response.status
+      )
+
+      console.log(
+        "UNGUIDED CHAT API STATUS TEXT:",
+        response.statusText
+      )
+
+      console.log(
+        "UNGUIDED CHAT API OK:",
+        response.ok
+      )
+
+      console.log(
+        "UNGUIDED CHAT API RAW RESPONSE:",
+        rawResponse
+      )
+
       let data: any = null
 
-      try {
-        data = await response.json()
-      } catch {
-        data = null
+      if (
+        rawResponse.trim()
+      ) {
+        try {
+          data =
+            JSON.parse(
+              rawResponse
+            )
+        } catch (
+          parseError
+        ) {
+          console.error(
+            "UNGUIDED CHAT JSON PARSE ERROR:",
+            parseError
+          )
+
+          throw new Error(
+            `The server returned an invalid response. HTTP status: ${response.status}.`
+          )
+        }
       }
 
-      /*
-       * Log the complete backend response.
-       * This helps diagnose API/Supabase/LLM errors.
-       */
       console.log(
-        "UNGUIDED CHAT API RESPONSE:",
-        {
-          status:
-            response.status,
-
-          statusText:
-            response.statusText,
-
-          ok:
-            response.ok,
-
-          data,
-        }
+        "UNGUIDED CHAT API DATA:",
+        data
       )
 
       if (!response.ok) {
-        /*
-         * The backend may return:
-         *
-         * {
-         *   error: "...",
-         *   details: {
-         *     message: "...",
-         *     details: "...",
-         *     hint: "...",
-         *     code: "..."
-         *   }
-         * }
-         *
-         * Prefer the most useful error.
-         */
-
         const backendMessage =
           data?.details?.message ||
           data?.details ||
@@ -345,34 +355,81 @@ export function UnguidedLLM({
             }
           )
 
-        let data: any = null
-
-        try {
-          data = await response.json()
-        } catch {
-          data = null
-        }
-
         /*
-         * Log the complete response from the final
-         * risk-register request.
+         * Read the response as raw text first.
+         *
+         * This is intentionally different from simply
+         * calling response.json(). It allows us to see
+         * exactly what the API returned when something
+         * goes wrong.
          */
-        console.error(
-          "UNGUIDED FINAL API RESPONSE:",
-          {
-            status:
-              response.status,
+        const rawResponse =
+          await response.text()
 
-            statusText:
-              response.statusText,
-
-            ok:
-              response.ok,
-
-            data,
-          }
+        console.log(
+          "========================================"
         )
 
+        console.log(
+          "UNGUIDED FINAL API STATUS:",
+          response.status
+        )
+
+        console.log(
+          "UNGUIDED FINAL API STATUS TEXT:",
+          response.statusText
+        )
+
+        console.log(
+          "UNGUIDED FINAL API OK:",
+          response.ok
+        )
+
+        console.log(
+          "UNGUIDED FINAL API RAW RESPONSE:",
+          rawResponse
+        )
+
+        console.log(
+          "========================================"
+        )
+
+        let data: any = null
+
+        /*
+         * Parse JSON only if the response actually
+         * contains something.
+         */
+        if (
+          rawResponse.trim()
+        ) {
+          try {
+            data =
+              JSON.parse(
+                rawResponse
+              )
+          } catch (
+            parseError
+          ) {
+            console.error(
+              "UNGUIDED FINAL JSON PARSE ERROR:",
+              parseError
+            )
+
+            throw new Error(
+              `The server returned an invalid response. HTTP status: ${response.status}. Raw response: ${rawResponse}`
+            )
+          }
+        }
+
+        console.log(
+          "UNGUIDED FINAL API DATA:",
+          data
+        )
+
+        /*
+         * Handle backend/API errors.
+         */
         if (!response.ok) {
           const backendMessage =
             data?.details?.message ||
@@ -394,10 +451,20 @@ export function UnguidedLLM({
          * The backend must return a risk register.
          */
         if (!data?.register) {
+          console.error(
+            "UNGUIDED FINAL RESPONSE HAS NO REGISTER:",
+            data
+          )
+
           throw new Error(
             "The AI generated a response, but no risk register was returned."
           )
         }
+
+        console.log(
+          "UNGUIDED FINAL RISK REGISTER RECEIVED:",
+          data.register
+        )
 
         setRegister(
           data.register
